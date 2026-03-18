@@ -221,8 +221,8 @@ pub(crate) fn extract_artifact(bytes: &[u8], extract_root: &Path) -> RunResult<(
 
 pub(crate) fn find_extracted_bins(
     extract_root: &Path,
-    required_bins: &[&'static str],
-) -> RunResult<HashMap<&'static str, PathBuf>> {
+    required_bins: &[String],
+) -> RunResult<HashMap<String, PathBuf>> {
     let mut found = HashMap::new();
     for entry in walkdir::WalkDir::new(extract_root) {
         let entry = entry.map_err(|e| {
@@ -236,22 +236,15 @@ pub(crate) fn find_extracted_bins(
         let Some(name) = entry.file_name().to_str() else {
             continue;
         };
-        if required_bins.contains(&name) {
-            found.insert(
-                required_bins
-                    .iter()
-                    .find(|candidate| **candidate == name)
-                    .copied()
-                    .unwrap(),
-                entry.path().to_path_buf(),
-            );
+        if required_bins.iter().any(|candidate| candidate == name) {
+            found.insert(name.to_string(), entry.path().to_path_buf());
         }
     }
 
     let missing: Vec<&str> = required_bins
         .iter()
-        .copied()
-        .filter(|name| !found.contains_key(name))
+        .map(String::as_str)
+        .filter(|name| !found.contains_key(*name))
         .collect();
     if !missing.is_empty() {
         return Err(RunReason::from_conf().to_err().with_detail(format!(
@@ -262,10 +255,60 @@ pub(crate) fn find_extracted_bins(
     Ok(found)
 }
 
+pub(crate) fn discover_extracted_bins(extract_root: &Path) -> RunResult<HashMap<String, PathBuf>> {
+    let mut artifact_files = HashMap::new();
+    let mut all_files = HashMap::new();
+
+    for entry in walkdir::WalkDir::new(extract_root) {
+        let entry = entry.map_err(|e| {
+            RunReason::from_conf()
+                .to_err()
+                .with_detail(format!("failed to walk extracted artifact: {}", e))
+        })?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str() else {
+            continue;
+        };
+
+        all_files
+            .entry(name.to_string())
+            .or_insert_with(|| entry.path().to_path_buf());
+
+        let is_artifact_file = entry
+            .path()
+            .strip_prefix(extract_root)
+            .ok()
+            .map(|rel| {
+                rel.components()
+                    .any(|component| component.as_os_str() == "artifacts")
+            })
+            .unwrap_or(false);
+        if is_artifact_file {
+            artifact_files
+                .entry(name.to_string())
+                .or_insert_with(|| entry.path().to_path_buf());
+        }
+    }
+
+    let discovered = if artifact_files.is_empty() {
+        all_files
+    } else {
+        artifact_files
+    };
+    if discovered.is_empty() {
+        return Err(RunReason::from_conf()
+            .to_err()
+            .with_detail("artifact did not contain any installable files".to_string()));
+    }
+    Ok(discovered)
+}
+
 pub(crate) fn install_bins(
     install_dir: &Path,
-    extracted: &HashMap<&'static str, PathBuf>,
-    bins: &[&'static str],
+    extracted: &HashMap<String, PathBuf>,
+    bins: &[String],
 ) -> RunResult<PathBuf> {
     let update_root = install_dir.join(".warp_parse-update");
     let backup_dir = update_root
@@ -341,7 +384,7 @@ pub(crate) fn install_bins(
 pub(crate) fn rollback_bins(
     install_dir: &Path,
     backup_dir: &Path,
-    bins: &[&'static str],
+    bins: &[String],
 ) -> RunResult<()> {
     let installed: Vec<InstalledBin> = bins
         .iter()
@@ -382,7 +425,7 @@ fn rollback_installed_bins(installed: &[InstalledBin]) -> RunResult<()> {
 pub(crate) fn run_health_check(
     install_dir: &Path,
     version: &str,
-    bins: &[&'static str],
+    bins: &[String],
 ) -> RunResult<()> {
     let expected = version.trim().trim_start_matches('v');
     for name in bins {
@@ -479,8 +522,24 @@ mod tests {
         let root = std::env::temp_dir().join(format!("wp-update-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).expect("create root");
         fs::write(root.join("wproj"), "#!/bin/sh\n").expect("write wproj");
-        let found = find_extracted_bins(&root, UpdateProduct::Wproj.bins()).expect("find bins");
+        let found =
+            find_extracted_bins(&root, &UpdateProduct::Wproj.owned_bins()).expect("find bins");
         assert!(found.contains_key("wproj"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn discover_extracted_bins_prefers_artifacts_dir() {
+        let root = std::env::temp_dir().join(format!("wp-update-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("artifacts")).expect("create artifacts dir");
+        fs::write(root.join("README.txt"), "notes").expect("write readme");
+        fs::write(root.join("artifacts").join("warp-parse"), "#!/bin/sh\n")
+            .expect("write artifact bin");
+
+        let found = discover_extracted_bins(&root).expect("discover bins");
+        assert!(found.contains_key("warp-parse"));
+        assert!(!found.contains_key("README.txt"));
+
         let _ = fs::remove_dir_all(root);
     }
 }

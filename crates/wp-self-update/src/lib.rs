@@ -10,15 +10,16 @@ pub use manifest::updates_manifest_url;
 use orion_error::{ToStructError, UvsFrom};
 pub use types::{
     CheckReport, CheckRequest, ResolvedRelease, SourceConfig, UpdateChannel, UpdateProduct,
-    UpdateReport, UpdateRequest, VersionRelation,
+    UpdateReport, UpdateRequest, UpdateTarget, VersionRelation,
 };
 pub use versioning::{compare_versions_str, relation_message};
 
 use fetch::load_release;
 use install::{
-    confirm_update, create_temp_update_dir, extract_artifact, fetch_asset_bytes,
-    find_extracted_bins, install_bins, is_probably_package_managed, resolve_install_dir,
-    rollback_bins, run_health_check, validate_download_url, verify_asset_sha256,
+    confirm_update, create_temp_update_dir, discover_extracted_bins, extract_artifact,
+    fetch_asset_bytes, find_extracted_bins, install_bins, is_probably_package_managed,
+    resolve_install_dir, rollback_bins, run_health_check, validate_download_url,
+    verify_asset_sha256,
 };
 use lock::UpdateLock;
 use std::path::PathBuf;
@@ -31,7 +32,7 @@ pub async fn check(request: CheckRequest) -> RunResult<CheckReport> {
 
     let relation = compare_versions_str(&request.current_version, &release.version)?;
     Ok(CheckReport {
-        product: request.product.as_str().to_string(),
+        product: request.product,
         channel: channel.as_str().to_string(),
         branch: request.branch,
         source,
@@ -47,8 +48,6 @@ pub async fn check(request: CheckRequest) -> RunResult<CheckReport> {
 
 pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
     let channel = request.source.channel;
-    let product = request.product;
-    let selected_bins = product.bins();
     let (release, source) = load_release(&request.source, channel).await?;
     versioning::validate_artifact_version_consistency(&release.version, &release.artifact)?;
     validate_download_url(&release.artifact, &request.source)?;
@@ -59,7 +58,7 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
 
     if relation != VersionRelation::UpdateAvailable && !request.force {
         return Ok(UpdateReport {
-            product: product.as_str().to_string(),
+            product: request.product.clone(),
             channel: channel.as_str().to_string(),
             source,
             current_version: request.current_version,
@@ -83,7 +82,7 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
 
     if request.dry_run {
         return Ok(UpdateReport {
-            product: product.as_str().to_string(),
+            product: request.product.clone(),
             channel: channel.as_str().to_string(),
             source,
             current_version: request.current_version,
@@ -105,7 +104,7 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
         )?
     {
         return Ok(UpdateReport {
-            product: product.as_str().to_string(),
+            product: request.product.clone(),
             channel: channel.as_str().to_string(),
             source,
             current_version: request.current_version,
@@ -125,10 +124,10 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
     let extract_root = create_temp_update_dir()?;
     let install_result = async {
         extract_artifact(&asset_bytes, &extract_root)?;
-        let extracted = find_extracted_bins(&extract_root, selected_bins)?;
-        let backup_dir = install_bins(&install_dir, &extracted, selected_bins)?;
-        if let Err(err) = run_health_check(&install_dir, &release.version, selected_bins) {
-            rollback_bins(&install_dir, &backup_dir, selected_bins)?;
+        let (extracted, selected_bins) = resolve_target_bins(&extract_root, &request.target)?;
+        let backup_dir = install_bins(&install_dir, &extracted, &selected_bins)?;
+        if let Err(err) = run_health_check(&install_dir, &release.version, &selected_bins) {
+            rollback_bins(&install_dir, &backup_dir, &selected_bins)?;
             return Err(err);
         }
         Ok::<PathBuf, wp_error::RunError>(backup_dir)
@@ -139,7 +138,7 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
     let backup_dir = install_result?;
 
     Ok(UpdateReport {
-        product: product.as_str().to_string(),
+        product: request.product,
         channel: channel.as_str().to_string(),
         source,
         current_version: request.current_version,
@@ -150,6 +149,29 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
         updated: true,
         status: format!("installed (backup: {})", backup_dir.display()),
     })
+}
+
+fn resolve_target_bins(
+    extract_root: &std::path::Path,
+    target: &UpdateTarget,
+) -> RunResult<(std::collections::HashMap<String, PathBuf>, Vec<String>)> {
+    match target {
+        UpdateTarget::Product(product) => {
+            let bins = product.owned_bins();
+            let extracted = find_extracted_bins(extract_root, &bins)?;
+            Ok((extracted, bins))
+        }
+        UpdateTarget::Bins(bins) => {
+            let extracted = find_extracted_bins(extract_root, bins)?;
+            Ok((extracted, bins.clone()))
+        }
+        UpdateTarget::Auto => {
+            let extracted = discover_extracted_bins(extract_root)?;
+            let mut bins: Vec<String> = extracted.keys().cloned().collect();
+            bins.sort();
+            Ok((extracted, bins))
+        }
+    }
 }
 
 #[doc(hidden)]
@@ -217,11 +239,11 @@ mod tests {
         let extract_root = create_temp_update_dir()?;
         let install_result = (|| {
             extract_artifact(artifact, &extract_root)?;
-            let bins = UpdateProduct::Suite.bins();
-            let extracted = find_extracted_bins(&extract_root, bins)?;
-            let backup_dir = install_bins(install_dir, &extracted, bins)?;
-            if let Err(err) = run_health_check(install_dir, version, bins) {
-                rollback_bins(install_dir, &backup_dir, bins)?;
+            let bins = UpdateProduct::Suite.owned_bins();
+            let extracted = find_extracted_bins(&extract_root, &bins)?;
+            let backup_dir = install_bins(install_dir, &extracted, &bins)?;
+            if let Err(err) = run_health_check(install_dir, version, &bins) {
+                rollback_bins(install_dir, &backup_dir, &bins)?;
                 return Err(err);
             }
             Ok(backup_dir)

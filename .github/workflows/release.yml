@@ -5,10 +5,6 @@ on:
     tags:
       - "v*.*.*"
       - "v*.*.*-dryrun"
-      - "wp-self-update-v*.*.*"
-      - "wp-self-update-v*.*.*-dryrun"
-      - "wp-installer-v*.*.*"
-      - "wp-installer-v*.*.*-dryrun"
 
 env:
   CARGO_TERM_COLOR: always
@@ -29,16 +25,10 @@ jobs:
             v*)
               package="wp-self-update"
               ;;
-            wp-self-update-v*)
-              package="wp-self-update"
-              ;;
-            wp-installer-v*)
-              package="wp-installer"
-              ;;
             *)
               echo "unsupported tag: $tag" >&2
               exit 1
-              ;;
+            ;;
           esac
 
           dry_run=false
@@ -48,6 +38,45 @@ jobs:
 
           echo "package=$package" >> "$GITHUB_OUTPUT"
           echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
+
+  build-installer:
+    name: Build wp-installer Artifacts
+    runs-on: ${{ matrix.os }}
+    needs: [resolve, create-release]
+    if: ${{ always() && needs.resolve.result == 'success' && (needs.create-release.result == 'success' || needs.resolve.outputs.dry_run == 'true') }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            artifact_target: aarch64-apple-darwin
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build wp-installer
+        run: cargo build -p wp-installer --release
+      - name: Package artifact
+        shell: bash
+        run: |
+          mkdir -p dist/artifacts
+          cp target/release/wp-installer dist/artifacts/wp-installer
+          tar -C dist -czf "wp-installer-${GITHUB_REF_NAME}-${{ matrix.artifact_target }}.tar.gz" artifacts
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wp-installer-${{ matrix.artifact_target }}
+          path: wp-installer-${{ github.ref_name }}-${{ matrix.artifact_target }}.tar.gz
+      - name: Attach artifact to GitHub Release
+        if: ${{ needs.resolve.outputs.dry_run != 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: wp-installer-${{ github.ref_name }}-${{ matrix.artifact_target }}.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   create-release:
     name: Create GitHub Release

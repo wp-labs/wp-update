@@ -2,12 +2,13 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::env;
 use std::path::PathBuf;
 use wp_self_update::{
-    check, update, CheckReport, CheckRequest, SourceConfig, UpdateChannel, UpdateProduct,
-    UpdateReport, UpdateRequest,
+    check, update, CheckReport, CheckRequest, SourceConfig, UpdateChannel, UpdateReport,
+    UpdateRequest, UpdateTarget,
 };
 
 const DEFAULT_MANIFEST_BASE_URL_ENV: &str = "WP_INSTALLER_DEFAULT_BASE_URL";
 const DEFAULT_MANIFEST_ROOT_ENV: &str = "WP_INSTALLER_DEFAULT_ROOT";
+const CUSTOM_PRODUCT_LABEL: &str = "custom";
 
 #[derive(Parser, Debug)]
 #[command(name = "wp-installer", about = "Bootstrap installer for wp-* binaries")]
@@ -28,12 +29,12 @@ struct SourceArgs {
     #[arg(long, value_enum, default_value_t = Channel::Stable)]
     channel: Channel,
     #[arg(
-        long = "updates-base-url",
+        long = "base-url",
         help = "Override manifest base URL; final path is {channel}/manifest.json"
     )]
     updates_base_url: Option<String>,
     #[arg(
-        long = "updates-root",
+        long = "local-root",
         help = "Override local manifest root; final path is {channel}/manifest.json"
     )]
     updates_root: Option<PathBuf>,
@@ -42,9 +43,7 @@ struct SourceArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-struct ProductArgs {
-    #[arg(long, value_enum)]
-    product: Product,
+struct RequestArgs {
     #[command(flatten)]
     source: SourceArgs,
     #[arg(long = "current-version")]
@@ -54,13 +53,13 @@ struct ProductArgs {
 #[derive(Args, Debug, Clone)]
 struct CheckArgs {
     #[command(flatten)]
-    product: ProductArgs,
+    request: RequestArgs,
 }
 
 #[derive(Args, Debug, Clone)]
 struct ApplyArgs {
     #[command(flatten)]
-    product: ProductArgs,
+    request: RequestArgs,
     #[arg(long, default_value_t = false)]
     yes: bool,
     #[arg(long = "dry-run", default_value_t = false)]
@@ -76,6 +75,12 @@ enum Channel {
     Stable,
     Beta,
     Alpha,
+}
+
+#[derive(Debug, Clone)]
+struct SourceDefaults {
+    updates_base_url: Option<String>,
+    updates_root: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -101,39 +106,35 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run_check(args: CheckArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let product = args.product.product;
     let report = check(CheckRequest {
-        product: product.into(),
-        source: resolve_source_config(product, &args.product.source)?,
-        current_version: current_version_or_default(&args.product, "0.0.0"),
+        product: CUSTOM_PRODUCT_LABEL.to_string(),
+        source: resolve_source_config(&args.request.source)?,
+        current_version: current_version_or_default(&args.request, "0.0.0"),
         branch: "installer".to_string(),
     })
     .await?;
-    print_check_report(&product, &args.product.source, &report)?;
+    print_check_report(&args.request.source, &report)?;
     Ok(())
 }
 
 async fn run_apply(action: &str, args: ApplyArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let product = args.product.product;
     let report = update(UpdateRequest {
-        product: product.into(),
-        source: resolve_source_config(product, &args.product.source)?,
-        current_version: current_version_or_default(&args.product, "0.0.0"),
+        product: CUSTOM_PRODUCT_LABEL.to_string(),
+        target: UpdateTarget::Auto,
+        source: resolve_source_config(&args.request.source)?,
+        current_version: current_version_or_default(&args.request, "0.0.0"),
         install_dir: args.install_dir,
         yes: args.yes,
         dry_run: args.dry_run,
         force: args.force,
     })
     .await?;
-    print_update_report(action, &product, &args.product.source, &report)?;
+    print_update_report(action, &args.request.source, &report)?;
     Ok(())
 }
 
-fn resolve_source_config(
-    product: Product,
-    source: &SourceArgs,
-) -> Result<SourceConfig, Box<dyn std::error::Error>> {
-    let defaults = default_source_overrides(product);
+fn resolve_source_config(source: &SourceArgs) -> Result<SourceConfig, Box<dyn std::error::Error>> {
+    let defaults = default_source_overrides();
     let updates_root = source.updates_root.clone().or(defaults.updates_root);
     let updates_base_url = source
         .updates_base_url
@@ -142,10 +143,8 @@ fn resolve_source_config(
 
     if updates_root.is_none() && updates_base_url.is_none() {
         return Err(format!(
-            "manifest source is required for product '{}': provide --updates-base-url, --updates-root, or set {} / {}",
-            product_name(product),
-            product_base_url_env(product),
-            product_root_env(product)
+            "manifest source is required: provide --base-url, --local-root, or set {} / {}",
+            DEFAULT_MANIFEST_BASE_URL_ENV, DEFAULT_MANIFEST_ROOT_ENV
         )
         .into());
     }
@@ -161,72 +160,20 @@ fn resolve_source_config(
     })
 }
 
-#[derive(Debug, Clone)]
-struct SourceDefaults {
-    updates_base_url: Option<String>,
-    updates_root: Option<PathBuf>,
-}
-
-fn default_source_overrides(product: Product) -> SourceDefaults {
+fn default_source_overrides() -> SourceDefaults {
     SourceDefaults {
-        updates_base_url: env::var(product_base_url_env(product))
-            .or_else(|_| env::var(DEFAULT_MANIFEST_BASE_URL_ENV))
-            .ok(),
-        updates_root: env::var_os(product_root_env(product))
-            .map(PathBuf::from)
-            .or_else(|| env::var_os(DEFAULT_MANIFEST_ROOT_ENV).map(PathBuf::from)),
+        updates_base_url: env::var(DEFAULT_MANIFEST_BASE_URL_ENV).ok(),
+        updates_root: env::var_os(DEFAULT_MANIFEST_ROOT_ENV).map(PathBuf::from),
     }
 }
 
-fn product_base_url_env(product: Product) -> &'static str {
-    match product {
-        Product::Suite => "WP_INSTALLER_SUITE_BASE_URL",
-        Product::Wparse => "WP_INSTALLER_WPARSE_BASE_URL",
-        Product::Wpgen => "WP_INSTALLER_WPGEN_BASE_URL",
-        Product::Wprescue => "WP_INSTALLER_WPRESCUE_BASE_URL",
-        Product::Wproj => "WP_INSTALLER_WPROJ_BASE_URL",
-    }
-}
-
-fn product_root_env(product: Product) -> &'static str {
-    match product {
-        Product::Suite => "WP_INSTALLER_SUITE_ROOT",
-        Product::Wparse => "WP_INSTALLER_WPARSE_ROOT",
-        Product::Wpgen => "WP_INSTALLER_WPGEN_ROOT",
-        Product::Wprescue => "WP_INSTALLER_WPRESCUE_ROOT",
-        Product::Wproj => "WP_INSTALLER_WPROJ_ROOT",
-    }
-}
-
-fn current_version_or_default(args: &ProductArgs, default: &str) -> String {
+fn current_version_or_default(args: &RequestArgs, default: &str) -> String {
     args.current_version
         .clone()
         .unwrap_or_else(|| default.to_string())
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-enum Product {
-    Suite,
-    Wparse,
-    Wpgen,
-    Wprescue,
-    Wproj,
-}
-
-impl From<Product> for UpdateProduct {
-    fn from(value: Product) -> Self {
-        match value {
-            Product::Suite => UpdateProduct::Suite,
-            Product::Wparse => UpdateProduct::Wparse,
-            Product::Wpgen => UpdateProduct::Wpgen,
-            Product::Wprescue => UpdateProduct::Wprescue,
-            Product::Wproj => UpdateProduct::Wproj,
-        }
-    }
-}
-
 fn print_check_report(
-    product: &Product,
     source: &SourceArgs,
     report: &CheckReport,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -235,7 +182,6 @@ fn print_check_report(
         return Ok(());
     }
     println!("wp-installer check");
-    println!("  Product  : {}", product_name(*product));
     println!("  Channel  : {}", report.channel);
     println!("  Current  : {}", report.current_version);
     println!("  Latest   : {}", report.latest_version);
@@ -254,7 +200,6 @@ fn print_check_report(
 
 fn print_update_report(
     action: &str,
-    product: &Product,
     source: &SourceArgs,
     report: &UpdateReport,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -263,7 +208,6 @@ fn print_update_report(
         return Ok(());
     }
     println!("wp-installer {}", action);
-    println!("  Product  : {}", product_name(*product));
     println!("  Channel  : {}", report.channel);
     println!("  Current  : {}", report.current_version);
     println!("  Latest   : {}", report.latest_version);
@@ -273,73 +217,59 @@ fn print_update_report(
     Ok(())
 }
 
-fn product_name(product: Product) -> &'static str {
-    match product {
-        Product::Suite => "suite",
-        Product::Wparse => "wparse",
-        Product::Wpgen => "wpgen",
-        Product::Wprescue => "wprescue",
-        Product::Wproj => "wproj",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn resolve_source_config_builds_channel_relative_manifest_root() {
-        let source = resolve_source_config(
-            Product::Wparse,
-            &SourceArgs {
-                channel: Channel::Beta,
-                updates_base_url: Some("https://example.com/releases/wparse".to_string()),
-                updates_root: None,
-                json: false,
-            },
-        )
+        let source = resolve_source_config(&SourceArgs {
+            channel: Channel::Beta,
+            updates_base_url: Some("https://example.com/releases/warp-parse".to_string()),
+            updates_root: None,
+            json: false,
+        })
         .unwrap();
 
         assert_eq!(source.channel, UpdateChannel::Beta);
         assert_eq!(
             source.updates_base_url,
-            "https://example.com/releases/wparse"
+            "https://example.com/releases/warp-parse"
         );
         assert_eq!(source.updates_root, None);
     }
 
     #[test]
     fn resolve_source_config_rejects_missing_manifest_source() {
-        let err = resolve_source_config(
-            Product::Suite,
-            &SourceArgs {
-                channel: Channel::Stable,
-                updates_base_url: None,
-                updates_root: None,
-                json: false,
-            },
-        )
+        let err = resolve_source_config(&SourceArgs {
+            channel: Channel::Stable,
+            updates_base_url: None,
+            updates_root: None,
+            json: false,
+        })
         .unwrap_err();
 
-        assert!(err
-            .to_string()
-            .contains("manifest source is required for product 'suite'"));
+        assert!(err.to_string().contains("manifest source is required"));
     }
 
     #[test]
-    fn product_specific_env_keys_are_stable() {
-        assert_eq!(
-            product_base_url_env(Product::Wparse),
-            "WP_INSTALLER_WPARSE_BASE_URL"
-        );
-        assert_eq!(
-            product_root_env(Product::Wparse),
-            "WP_INSTALLER_WPARSE_ROOT"
-        );
-        assert_eq!(
-            product_base_url_env(Product::Suite),
-            "WP_INSTALLER_SUITE_BASE_URL"
-        );
-        assert_eq!(product_root_env(Product::Suite), "WP_INSTALLER_SUITE_ROOT");
+    fn cli_accepts_updates_base_url_without_product() {
+        let cli = Cli::try_parse_from([
+            "wp-installer",
+            "check",
+            "--base-url",
+            "https://example.com/releases/warp-parse",
+        ])
+        .expect("parse cli");
+
+        match cli.command {
+            Command::Check(args) => {
+                assert_eq!(
+                    args.request.source.updates_base_url.as_deref(),
+                    Some("https://example.com/releases/warp-parse")
+                );
+            }
+            _ => panic!("expected check command"),
+        }
     }
 }

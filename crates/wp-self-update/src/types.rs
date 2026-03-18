@@ -28,7 +28,7 @@ pub struct SourceConfig {
 
 #[derive(Debug, Clone)]
 pub struct CheckRequest {
-    pub product: UpdateProduct,
+    pub product: String,
     pub source: SourceConfig,
     pub current_version: String,
     pub branch: String,
@@ -36,7 +36,8 @@ pub struct CheckRequest {
 
 #[derive(Debug, Clone)]
 pub struct UpdateRequest {
-    pub product: UpdateProduct,
+    pub product: String,
+    pub target: UpdateTarget,
     pub source: SourceConfig,
     pub current_version: String,
     pub install_dir: Option<PathBuf>,
@@ -89,6 +90,13 @@ pub struct ResolvedRelease {
     pub sha256: String,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum UpdateTarget {
+    Product(UpdateProduct),
+    Auto,
+    Bins(Vec<String>),
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UpdateProduct {
@@ -118,5 +126,9 @@ impl UpdateProduct {
             Self::Wprescue => &["wprescue"],
             Self::Wproj => &["wproj"],
         }
+    }
+
+    pub fn owned_bins(self) -> Vec<String> {
+        self.bins().iter().map(|bin| (*bin).to_string()).collect()
     }
 }
