@@ -3,6 +3,8 @@ name: Release
 on:
   push:
     tags:
+      - "v*.*.*"
+      - "v*.*.*-dryrun"
       - "wp-self-update-v*.*.*"
       - "wp-self-update-v*.*.*-dryrun"
       - "wp-installer-v*.*.*"
@@ -24,6 +26,9 @@ jobs:
         run: |
           tag="${GITHUB_REF_NAME}"
           case "$tag" in
+            v*)
+              package="wp-self-update"
+              ;;
             wp-self-update-v*)
               package="wp-self-update"
               ;;
