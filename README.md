@@ -10,3 +10,11 @@ Shared update crates for wp-labs binaries.
 ## Docs
 
 - `docs/orion-accessor-evaluation.md`
+
+## Quick Start
+
+Install the latest GitHub release for a single-binary tool directly:
+
+```bash
+wp-inst --github https://github.com/wp-labs/wpl-check --latest
+```

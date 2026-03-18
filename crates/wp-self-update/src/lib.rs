@@ -9,8 +9,8 @@ mod versioning;
 pub use manifest::updates_manifest_url;
 use orion_error::{ToStructError, UvsFrom};
 pub use types::{
-    CheckReport, CheckRequest, ResolvedRelease, SourceConfig, UpdateChannel, UpdateProduct,
-    UpdateReport, UpdateRequest, UpdateTarget, VersionRelation,
+    CheckReport, CheckRequest, GithubRepo, ResolvedRelease, SourceConfig, SourceKind,
+    UpdateChannel, UpdateProduct, UpdateReport, UpdateRequest, UpdateTarget, VersionRelation,
 };
 pub use versioning::{compare_versions_str, relation_message};
 
@@ -27,16 +27,18 @@ use wp_error::run_error::RunResult;
 
 pub async fn check(request: CheckRequest) -> RunResult<CheckReport> {
     let channel = request.source.channel;
+    let channel_name = source_channel_name(&request.source).to_string();
+    let manifest_format = source_format_name(&request.source).to_string();
     let (release, source) = load_release(&request.source, channel).await?;
     versioning::validate_artifact_version_consistency(&release.version, &release.artifact)?;
 
     let relation = compare_versions_str(&request.current_version, &release.version)?;
     Ok(CheckReport {
         product: request.product,
-        channel: channel.as_str().to_string(),
+        channel: channel_name,
         branch: request.branch,
         source,
-        manifest_format: "v2".to_string(),
+        manifest_format,
         current_version: request.current_version,
         latest_version: release.version.clone(),
         update_available: relation == VersionRelation::UpdateAvailable,
@@ -48,6 +50,7 @@ pub async fn check(request: CheckRequest) -> RunResult<CheckReport> {
 
 pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
     let channel = request.source.channel;
+    let channel_name = source_channel_name(&request.source).to_string();
     let (release, source) = load_release(&request.source, channel).await?;
     versioning::validate_artifact_version_consistency(&release.version, &release.artifact)?;
     validate_download_url(&release.artifact, &request.source)?;
@@ -59,7 +62,7 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
     if relation != VersionRelation::UpdateAvailable && !request.force {
         return Ok(UpdateReport {
             product: request.product.clone(),
-            channel: channel.as_str().to_string(),
+            channel: channel_name.clone(),
             source,
             current_version: request.current_version,
             latest_version: release.version,
@@ -83,7 +86,7 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
     if request.dry_run {
         return Ok(UpdateReport {
             product: request.product.clone(),
-            channel: channel.as_str().to_string(),
+            channel: channel_name.clone(),
             source,
             current_version: request.current_version,
             latest_version: release.version,
@@ -105,7 +108,7 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
     {
         return Ok(UpdateReport {
             product: request.product.clone(),
-            channel: channel.as_str().to_string(),
+            channel: channel_name.clone(),
             source,
             current_version: request.current_version,
             latest_version: release.version,
@@ -139,7 +142,7 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
 
     Ok(UpdateReport {
         product: request.product,
-        channel: channel.as_str().to_string(),
+        channel: channel_name,
         source,
         current_version: request.current_version,
         latest_version: release.version,
@@ -149,6 +152,20 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
         updated: true,
         status: format!("installed (backup: {})", backup_dir.display()),
     })
+}
+
+fn source_channel_name(source: &SourceConfig) -> &'static str {
+    match source.kind {
+        SourceKind::Manifest { .. } => source.channel.as_str(),
+        SourceKind::GithubLatest { .. } => "latest",
+    }
+}
+
+fn source_format_name(source: &SourceConfig) -> &'static str {
+    match source.kind {
+        SourceKind::Manifest { .. } => "v2",
+        SourceKind::GithubLatest { .. } => "github-release",
+    }
 }
 
 fn prepare_install_payload(
@@ -309,6 +326,14 @@ mod tests {
         format!("#!/bin/sh\necho \"{} {}\"\n", name, version).into_bytes()
     }
 
+    fn build_help_only_binary(name: &str) -> Vec<u8> {
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--help\" ] || [ \"$1\" = \"help\" ]; then\n  echo \"{} help\"\n  exit 0\nfi\nif [ \"$1\" = \"--version\" ] || [ \"$1\" = \"-V\" ] || [ \"$1\" = \"version\" ]; then\n  echo \"unknown command: $1\" 1>&2\n  exit 1\nfi\necho \"{} help\"\n",
+            name, name
+        )
+        .into_bytes()
+    }
+
     #[test]
     fn installs_release_artifact() {
         let artifact = build_artifact_tar_gz("0.30.0", true);
@@ -374,5 +399,30 @@ mod tests {
         .expect_err("expected rejection");
 
         assert!(format!("{}", err).contains("exactly one target binary"));
+    }
+
+    #[test]
+    fn installs_raw_binary_that_only_supports_help_probe() {
+        let artifact = build_help_only_binary("wpl-check");
+        let install_dir = tempdir().expect("install tempdir");
+
+        let extract_root = create_temp_update_dir().expect("extract root");
+        let install_result = (|| {
+            let (extracted, bins) = prepare_install_payload(
+                &artifact,
+                &extract_root,
+                &UpdateTarget::Bins(vec!["wpl-check".to_string()]),
+            )?;
+            let backup_dir = install_bins(install_dir.path(), &extracted, &bins)?;
+            if let Err(err) = run_health_check(install_dir.path(), "0.30.0", &bins) {
+                rollback_bins(install_dir.path(), &backup_dir, &bins)?;
+                return Err(err);
+            }
+            Ok::<PathBuf, wp_error::RunError>(backup_dir)
+        })();
+        let _ = std::fs::remove_dir_all(&extract_root);
+
+        assert!(install_result.is_ok());
+        assert!(install_dir.path().join("wpl-check").exists());
     }
 }

@@ -1,15 +1,16 @@
 use crate::fetch::is_retryable_status;
-use crate::SourceConfig;
+use crate::{SourceConfig, SourceKind};
 use flate2::read::GzDecoder;
+use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
 use orion_error::{ToStructError, UvsFrom};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Cursor, Write};
+use std::io::{self, Cursor, IsTerminal, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 use tar::Archive;
 use uuid::Uuid;
 use wp_error::run_error::{RunReason, RunResult};
@@ -129,9 +130,22 @@ fn is_allowed_artifact_host(host: &str, source: &SourceConfig) -> bool {
         return true;
     }
 
-    if let Ok(url) = reqwest::Url::parse(&source.updates_base_url) {
-        if url.host_str() == Some(host) {
-            return true;
+    match &source.kind {
+        SourceKind::Manifest {
+            updates_base_url, ..
+        } => {
+            if let Ok(url) = reqwest::Url::parse(updates_base_url) {
+                if url.host_str() == Some(host) {
+                    return true;
+                }
+            }
+        }
+        SourceKind::GithubLatest { repo } => {
+            if let Ok(url) = reqwest::Url::parse(&repo.url) {
+                if url.host_str() == Some(host) {
+                    return true;
+                }
+            }
         }
     }
     false
@@ -158,11 +172,17 @@ pub(crate) async fn fetch_asset_bytes(url: &str) -> RunResult<Vec<u8>> {
             Ok(rsp) => {
                 let status = rsp.status();
                 if status.is_success() {
-                    let bytes = rsp.bytes().await.map_err(|e| {
-                        RunReason::from_conf()
-                            .to_err()
-                            .with_detail(format!("failed to read artifact response {}: {}", url, e))
-                    })?;
+                    let bytes = match fetch_asset_bytes_from_response(url, rsp).await {
+                        Ok(bytes) => bytes,
+                        Err(err) => {
+                            return fetch_asset_bytes_via_curl(url).map_err(|curl_err| {
+                                RunReason::from_conf().to_err().with_detail(format!(
+                                    "failed to read artifact response {}: {}; curl fallback failed: {}",
+                                    url, err, curl_err
+                                ))
+                            });
+                        }
+                    };
                     return Ok(bytes.to_vec());
                 }
                 if is_retryable_status(status) && attempt < FETCH_ASSET_MAX_ATTEMPTS {
@@ -188,6 +208,180 @@ pub(crate) async fn fetch_asset_bytes(url: &str) -> RunResult<Vec<u8>> {
         FETCH_ASSET_MAX_ATTEMPTS,
         last_error.unwrap_or_else(|| "unknown error".to_string())
     )))
+}
+
+async fn fetch_asset_bytes_from_response(
+    url: &str,
+    mut rsp: reqwest::Response,
+) -> Result<Vec<u8>, reqwest::Error> {
+    let mut progress = new_download_progress(url, rsp.content_length());
+    let mut bytes = Vec::new();
+    while let Some(chunk) = rsp.chunk().await? {
+        progress.inc(chunk.len() as u64);
+        bytes.extend_from_slice(&chunk);
+    }
+    progress.finish();
+    Ok(bytes)
+}
+
+enum DownloadProgress {
+    Tty(ProgressBar),
+    Text(TextDownloadProgress),
+}
+
+impl DownloadProgress {
+    fn inc(&mut self, amount: u64) {
+        match self {
+            Self::Tty(progress) => progress.inc(amount),
+            Self::Text(progress) => progress.inc(amount),
+        }
+    }
+
+    fn finish(&mut self) {
+        match self {
+            Self::Tty(progress) => {
+                let label = progress.message().to_string();
+                progress.finish_with_message(format!("downloaded {}", label));
+            }
+            Self::Text(progress) => progress.finish(),
+        }
+    }
+}
+
+struct TextDownloadProgress {
+    label: String,
+    total: Option<u64>,
+    downloaded: u64,
+    last_percent: u64,
+    last_log_at: Instant,
+    started_at: Instant,
+}
+
+impl TextDownloadProgress {
+    fn new(label: String, total: Option<u64>) -> Self {
+        match total {
+            Some(total) if total > 0 => {
+                eprintln!("Downloading {} ({})...", label, HumanBytes(total));
+            }
+            _ => eprintln!("Downloading {}...", label),
+        }
+
+        let now = Instant::now();
+        Self {
+            label,
+            total,
+            downloaded: 0,
+            last_percent: 0,
+            last_log_at: now,
+            started_at: now,
+        }
+    }
+
+    fn inc(&mut self, amount: u64) {
+        self.downloaded = self.downloaded.saturating_add(amount);
+        let now = Instant::now();
+
+        if let Some(total) = self.total.filter(|total| *total > 0) {
+            let percent = ((self.downloaded.saturating_mul(100)) / total).min(100);
+            let percent_advanced = percent >= self.last_percent.saturating_add(10);
+            let timed_out = now.duration_since(self.last_log_at) >= Duration::from_secs(2);
+            if percent_advanced || timed_out {
+                self.last_percent = percent;
+                self.last_log_at = now;
+                eprintln!(
+                    "Downloaded {}: {}/{} ({}%)",
+                    self.label,
+                    HumanBytes(self.downloaded),
+                    HumanBytes(total),
+                    percent
+                );
+            }
+            return;
+        }
+
+        let grew_enough = self.downloaded.saturating_sub(self.last_percent) >= 5 * 1024 * 1024;
+        let timed_out = now.duration_since(self.last_log_at) >= Duration::from_secs(2);
+        if grew_enough || timed_out {
+            self.last_percent = self.downloaded;
+            self.last_log_at = now;
+            eprintln!("Downloaded {}: {}", self.label, HumanBytes(self.downloaded));
+        }
+    }
+
+    fn finish(&self) {
+        eprintln!(
+            "Downloaded {}: {} in {:.1}s",
+            self.label,
+            HumanBytes(self.downloaded),
+            self.started_at.elapsed().as_secs_f32()
+        );
+    }
+}
+
+fn new_download_progress(url: &str, total: Option<u64>) -> DownloadProgress {
+    let label = download_label(url);
+    if !io::stderr().is_terminal() {
+        return DownloadProgress::Text(TextDownloadProgress::new(label, total));
+    }
+
+    let progress = match total {
+        Some(total) if total > 0 => ProgressBar::new(total),
+        _ => ProgressBar::new_spinner(),
+    };
+    if let Ok(style) = ProgressStyle::with_template(
+        "{spinner:.green} downloading {msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})",
+    ) {
+        progress.set_style(style.progress_chars("#>-"));
+    }
+    if total.is_none() {
+        progress.enable_steady_tick(Duration::from_millis(120));
+    }
+    progress.set_message(label);
+    DownloadProgress::Tty(progress)
+}
+
+fn download_label(url: &str) -> String {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| {
+            parsed
+                .path_segments()
+                .and_then(|mut segments| segments.next_back().map(str::to_string))
+        })
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "artifact".to_string())
+}
+
+fn fetch_asset_bytes_via_curl(url: &str) -> Result<Vec<u8>, String> {
+    let temp = std::env::temp_dir().join(format!("wp-inst-download-{}", Uuid::new_v4()));
+    let label = download_label(url);
+    eprintln!("Retrying {} via curl...", label);
+
+    let mut cmd = Command::new("curl");
+    cmd.arg("-LfsS");
+    if io::stderr().is_terminal() {
+        cmd.arg("--progress-bar");
+    } else {
+        cmd.arg("--no-progress-meter");
+    }
+    let status = cmd
+        .arg("-o")
+        .arg(&temp)
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|e| format!("failed to start curl: {}", e))?;
+    if status.success() {
+        let bytes = fs::read(&temp).map_err(|e| format!("failed to read curl output: {}", e))?;
+        let _ = fs::remove_file(&temp);
+        eprintln!("Downloaded {}: {}", label, HumanBytes(bytes.len() as u64));
+        return Ok(bytes);
+    }
+
+    let _ = fs::remove_file(&temp);
+    Err(format!("curl exited with status {}", status))
 }
 
 pub(crate) fn verify_asset_sha256(bytes: &[u8], expected_hex: &str) -> RunResult<()> {
@@ -461,34 +655,81 @@ pub(crate) fn run_health_check(
 ) -> RunResult<()> {
     let expected = version.trim().trim_start_matches('v');
     for name in bins {
-        let output = Command::new(install_dir.join(name))
-            .arg("--version")
-            .output()
-            .map_err(|e| {
+        let exe = install_dir.join(name);
+        let version_args = [["--version"], ["-V"], ["version"]];
+        let help_args = [["--help"], ["help"]];
+
+        let mut saw_success = false;
+        let mut saw_version_mismatch = false;
+        let mut last_output = String::new();
+
+        for args in version_args {
+            let output = Command::new(&exe).args(args).output().map_err(|e| {
                 RunReason::from_conf().to_err().with_detail(format!(
-                    "health check failed to start {} --version: {}",
-                    name, e
+                    "health check failed to start {} {}: {}",
+                    name,
+                    args.join(" "),
+                    e
                 ))
             })?;
-        if !output.status.success() {
-            return Err(RunReason::from_conf().to_err().with_detail(format!(
-                "health check failed for {} --version with status {}",
-                name, output.status
-            )));
+            let merged = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            last_output = merged.trim().to_string();
+            if !output.status.success() {
+                continue;
+            }
+            saw_success = true;
+            if merged.contains(expected) {
+                saw_version_mismatch = false;
+                break;
+            }
+            saw_version_mismatch = true;
         }
-        let merged = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        if !merged.contains(expected) {
+
+        if saw_success && !saw_version_mismatch {
+            continue;
+        }
+
+        for args in help_args {
+            let output = Command::new(&exe).args(args).output().map_err(|e| {
+                RunReason::from_conf().to_err().with_detail(format!(
+                    "health check failed to start {} {}: {}",
+                    name,
+                    args.join(" "),
+                    e
+                ))
+            })?;
+            let merged = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            last_output = merged.trim().to_string();
+            if output.status.success() && !last_output.is_empty() {
+                saw_success = true;
+                saw_version_mismatch = false;
+                break;
+            }
+        }
+
+        if saw_success && !saw_version_mismatch {
+            continue;
+        }
+
+        if saw_version_mismatch {
             return Err(RunReason::from_conf().to_err().with_detail(format!(
                 "health check version mismatch for {}: expected output to contain '{}', got '{}'",
-                name,
-                expected,
-                merged.trim()
+                name, expected, last_output
             )));
         }
+
+        return Err(RunReason::from_conf().to_err().with_detail(format!(
+            "health check failed for {}: no supported version/help probe succeeded",
+            name
+        )));
     }
     Ok(())
 }
@@ -542,9 +783,11 @@ mod tests {
             "https://evil.example.com/warp-parse-v0.30.0.tar.gz",
             &SourceConfig {
                 channel: UpdateChannel::Stable,
-                updates_base_url: "https://raw.githubusercontent.com/wp-labs/wp-install/main"
-                    .to_string(),
-                updates_root: None,
+                kind: SourceKind::Manifest {
+                    updates_base_url: "https://raw.githubusercontent.com/wp-labs/wp-install/main"
+                        .to_string(),
+                    updates_root: None,
+                },
             },
         )
         .unwrap_err();
