@@ -5,4 +5,8 @@ Shared update crates for wp-labs binaries.
 ## Crates
 
 - `wp-self-update`
-- `wp-installer`
+- `wp-inst`
+
+## Docs
+
+- `docs/orion-accessor-evaluation.md`

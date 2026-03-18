@@ -16,10 +16,10 @@ pub use versioning::{compare_versions_str, relation_message};
 
 use fetch::load_release;
 use install::{
-    confirm_update, create_temp_update_dir, discover_extracted_bins, extract_artifact,
-    fetch_asset_bytes, find_extracted_bins, install_bins, is_probably_package_managed,
-    resolve_install_dir, rollback_bins, run_health_check, validate_download_url,
-    verify_asset_sha256,
+    confirm_update, create_temp_update_dir, discover_extracted_bins, extract_artifact_archive,
+    fetch_asset_bytes, find_extracted_bins, install_bins, is_gzip_artifact,
+    is_probably_package_managed, resolve_install_dir, rollback_bins, run_health_check,
+    stage_raw_binary, validate_download_url, verify_asset_sha256,
 };
 use lock::UpdateLock;
 use std::path::PathBuf;
@@ -123,8 +123,8 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
 
     let extract_root = create_temp_update_dir()?;
     let install_result = async {
-        extract_artifact(&asset_bytes, &extract_root)?;
-        let (extracted, selected_bins) = resolve_target_bins(&extract_root, &request.target)?;
+        let (extracted, selected_bins) =
+            prepare_install_payload(&asset_bytes, &extract_root, &request.target)?;
         let backup_dir = install_bins(&install_dir, &extracted, &selected_bins)?;
         if let Err(err) = run_health_check(&install_dir, &release.version, &selected_bins) {
             rollback_bins(&install_dir, &backup_dir, &selected_bins)?;
@@ -149,6 +149,59 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
         updated: true,
         status: format!("installed (backup: {})", backup_dir.display()),
     })
+}
+
+fn prepare_install_payload(
+    asset_bytes: &[u8],
+    extract_root: &std::path::Path,
+    target: &UpdateTarget,
+) -> RunResult<(std::collections::HashMap<String, PathBuf>, Vec<String>)> {
+    if is_gzip_artifact(asset_bytes) {
+        extract_artifact_archive(asset_bytes, extract_root)?;
+        return resolve_target_bins(extract_root, target);
+    }
+
+    let bins = resolve_raw_binary_bins(target)?;
+    let extracted = stage_raw_binary(asset_bytes, extract_root, &bins[0])?;
+    Ok((extracted, bins))
+}
+
+fn resolve_raw_binary_bins(target: &UpdateTarget) -> RunResult<Vec<String>> {
+    match target {
+        UpdateTarget::Product(product) => {
+            let bins = product.owned_bins();
+            if bins.len() == 1 {
+                return Ok(bins);
+            }
+            Err(wp_error::run_error::RunReason::from_conf()
+                .to_err()
+                .with_detail("raw binary artifacts require exactly one target binary".to_string()))
+        }
+        UpdateTarget::Bins(bins) => {
+            if bins.len() == 1 {
+                return Ok(bins.clone());
+            }
+            Err(wp_error::run_error::RunReason::from_conf()
+                .to_err()
+                .with_detail("raw binary artifacts require exactly one target binary".to_string()))
+        }
+        UpdateTarget::Auto => {
+            let current_exe = std::env::current_exe().map_err(|e| {
+                wp_error::run_error::RunReason::from_conf()
+                    .to_err()
+                    .with_detail(format!("failed to resolve current executable path: {}", e))
+            })?;
+            let Some(name) = current_exe.file_name().and_then(|value| value.to_str()) else {
+                return Err(wp_error::run_error::RunReason::from_conf()
+                    .to_err()
+                    .with_detail(format!(
+                        "failed to resolve executable name from {}",
+                        current_exe.display()
+                    )));
+            };
+            Ok(vec![name.to_string()])
+        }
+    }
 }
 
 fn resolve_target_bins(
@@ -183,8 +236,8 @@ pub use versioning::validate_artifact_version_consistency;
 mod tests {
     use super::*;
     use crate::install::{
-        create_temp_update_dir, extract_artifact, find_extracted_bins, install_bins, rollback_bins,
-        run_health_check,
+        create_temp_update_dir, extract_artifact_archive, find_extracted_bins, install_bins,
+        rollback_bins, run_health_check,
     };
     use flate2::write::GzEncoder;
     use flate2::Compression;
@@ -238,7 +291,7 @@ mod tests {
     fn apply_artifact(install_dir: &Path, artifact: &[u8], version: &str) -> RunResult<PathBuf> {
         let extract_root = create_temp_update_dir()?;
         let install_result = (|| {
-            extract_artifact(artifact, &extract_root)?;
+            extract_artifact_archive(artifact, &extract_root)?;
             let bins = UpdateProduct::Suite.owned_bins();
             let extracted = find_extracted_bins(&extract_root, &bins)?;
             let backup_dir = install_bins(install_dir, &extracted, &bins)?;
@@ -250,6 +303,10 @@ mod tests {
         })();
         let _ = std::fs::remove_dir_all(&extract_root);
         install_result
+    }
+
+    fn build_raw_binary(version: &str, name: &str) -> Vec<u8> {
+        format!("#!/bin/sh\necho \"{} {}\"\n", name, version).into_bytes()
     }
 
     #[test]
@@ -286,5 +343,36 @@ mod tests {
             .expect("run rolled back wproj");
         assert!(out.status.success());
         assert!(String::from_utf8_lossy(&out.stdout).contains("0.21.0"));
+    }
+
+    #[test]
+    fn prepares_raw_binary_for_single_bin_targets() {
+        let extract_root = tempdir().expect("extract tempdir");
+        let artifact = build_raw_binary("0.30.0", "wproj");
+
+        let (extracted, bins) = prepare_install_payload(
+            &artifact,
+            extract_root.path(),
+            &UpdateTarget::Bins(vec!["wproj".to_string()]),
+        )
+        .expect("prepare raw binary");
+
+        assert_eq!(bins, vec!["wproj".to_string()]);
+        assert!(extracted.contains_key("wproj"));
+    }
+
+    #[test]
+    fn rejects_raw_binary_for_multi_bin_targets() {
+        let extract_root = tempdir().expect("extract tempdir");
+        let artifact = build_raw_binary("0.30.0", "suite");
+
+        let err = prepare_install_payload(
+            &artifact,
+            extract_root.path(),
+            &UpdateTarget::Product(UpdateProduct::Suite),
+        )
+        .expect_err("expected rejection");
+
+        assert!(format!("{}", err).contains("exactly one target binary"));
     }
 }

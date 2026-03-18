@@ -60,7 +60,7 @@ mod main  {
   }
   flow _pub_local   {
     gx.cmd (  "mkdir -p ${HOME}/bin" );
-    gx.cmd (  "cp ${MAIN_BLD_BINS}/wpl-check ${HOME}/bin/"  );
+    gx.cmd (  "cp ${MAIN_BLD_BINS}/wp-inst ${HOME}/bin/"  );
   }
 
 }

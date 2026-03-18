@@ -11,7 +11,7 @@ const DEFAULT_MANIFEST_ROOT_ENV: &str = "WP_INSTALLER_DEFAULT_ROOT";
 const CUSTOM_PRODUCT_LABEL: &str = "custom";
 
 #[derive(Parser, Debug)]
-#[command(name = "wp-installer", about = "Bootstrap installer for wp-* binaries")]
+#[command(name = "wp-inst", about = "Bootstrap installer for wp-* binaries")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -88,7 +88,7 @@ async fn main() {
     let exit_code = match run().await {
         Ok(()) => 0,
         Err(err) => {
-            eprintln!("wp-installer error: {}", err);
+            eprintln!("wp-inst error: {}", err);
             1
         }
     };
@@ -181,7 +181,7 @@ fn print_check_report(
         println!("{}", serde_json::to_string_pretty(report)?);
         return Ok(());
     }
-    println!("wp-installer check");
+    println!("wp-inst check");
     println!("  Channel  : {}", report.channel);
     println!("  Current  : {}", report.current_version);
     println!("  Latest   : {}", report.latest_version);
@@ -207,7 +207,7 @@ fn print_update_report(
         println!("{}", serde_json::to_string_pretty(report)?);
         return Ok(());
     }
-    println!("wp-installer {}", action);
+    println!("wp-inst {}", action);
     println!("  Channel  : {}", report.channel);
     println!("  Current  : {}", report.current_version);
     println!("  Latest   : {}", report.latest_version);
@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn cli_accepts_updates_base_url_without_product() {
         let cli = Cli::try_parse_from([
-            "wp-installer",
+            "wp-inst",
             "check",
             "--base-url",
             "https://example.com/releases/warp-parse",

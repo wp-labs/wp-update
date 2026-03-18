@@ -14,6 +14,10 @@ use tar::Archive;
 use uuid::Uuid;
 use wp_error::run_error::{RunReason, RunResult};
 
+const FETCH_ASSET_CONNECT_TIMEOUT_SECS: u64 = 5;
+const FETCH_ASSET_REQUEST_TIMEOUT_SECS: u64 = 120;
+const FETCH_ASSET_MAX_ATTEMPTS: usize = 3;
+
 pub(crate) fn resolve_install_dir(raw: Option<&Path>) -> RunResult<PathBuf> {
     let base = if let Some(raw) = raw {
         raw.to_path_buf()
@@ -135,8 +139,12 @@ fn is_allowed_artifact_host(host: &str, source: &SourceConfig) -> bool {
 
 pub(crate) async fn fetch_asset_bytes(url: &str) -> RunResult<Vec<u8>> {
     let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(FETCH_ASSET_CONNECT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(FETCH_ASSET_REQUEST_TIMEOUT_SECS))
+        .no_gzip()
+        .no_brotli()
+        .no_deflate()
+        .no_zstd()
         .build()
         .map_err(|e| {
             RunReason::from_conf()
@@ -145,7 +153,7 @@ pub(crate) async fn fetch_asset_bytes(url: &str) -> RunResult<Vec<u8>> {
         })?;
 
     let mut last_error: Option<String> = None;
-    for attempt in 1..=3 {
+    for attempt in 1..=FETCH_ASSET_MAX_ATTEMPTS {
         match client.get(url).send().await {
             Ok(rsp) => {
                 let status = rsp.status();
@@ -157,7 +165,7 @@ pub(crate) async fn fetch_asset_bytes(url: &str) -> RunResult<Vec<u8>> {
                     })?;
                     return Ok(bytes.to_vec());
                 }
-                if is_retryable_status(status) && attempt < 3 {
+                if is_retryable_status(status) && attempt < FETCH_ASSET_MAX_ATTEMPTS {
                     tokio::time::sleep(Duration::from_millis(200 * attempt as u64)).await;
                     continue;
                 }
@@ -167,7 +175,7 @@ pub(crate) async fn fetch_asset_bytes(url: &str) -> RunResult<Vec<u8>> {
             }
             Err(e) => {
                 last_error = Some(e.to_string());
-                if attempt < 3 {
+                if attempt < FETCH_ASSET_MAX_ATTEMPTS {
                     tokio::time::sleep(Duration::from_millis(200 * attempt as u64)).await;
                     continue;
                 }
@@ -177,7 +185,7 @@ pub(crate) async fn fetch_asset_bytes(url: &str) -> RunResult<Vec<u8>> {
     Err(RunReason::from_conf().to_err().with_detail(format!(
         "failed to fetch artifact {} after {} attempts: {}",
         url,
-        3,
+        FETCH_ASSET_MAX_ATTEMPTS,
         last_error.unwrap_or_else(|| "unknown error".to_string())
     )))
 }
@@ -206,7 +214,7 @@ pub(crate) fn create_temp_update_dir() -> RunResult<PathBuf> {
     Ok(dir)
 }
 
-pub(crate) fn extract_artifact(bytes: &[u8], extract_root: &Path) -> RunResult<()> {
+pub(crate) fn extract_artifact_archive(bytes: &[u8], extract_root: &Path) -> RunResult<()> {
     let cursor = Cursor::new(bytes);
     let decoder = GzDecoder::new(cursor);
     let mut archive = Archive::new(decoder);
@@ -217,6 +225,30 @@ pub(crate) fn extract_artifact(bytes: &[u8], extract_root: &Path) -> RunResult<(
             e
         ))
     })
+}
+
+pub(crate) fn is_gzip_artifact(bytes: &[u8]) -> bool {
+    bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b
+}
+
+pub(crate) fn stage_raw_binary(
+    bytes: &[u8],
+    extract_root: &Path,
+    bin_name: &str,
+) -> RunResult<HashMap<String, PathBuf>> {
+    let path = extract_root.join(bin_name);
+    fs::write(&path, bytes).map_err(|e| {
+        RunReason::from_conf().to_err().with_detail(format!(
+            "failed to stage raw binary into {}: {}",
+            path.display(),
+            e
+        ))
+    })?;
+    set_exec_permission(&path)?;
+
+    let mut found = HashMap::new();
+    found.insert(bin_name.to_string(), path);
+    Ok(found)
 }
 
 pub(crate) fn find_extracted_bins(
@@ -496,6 +528,8 @@ mod tests {
     use super::*;
     use crate::UpdateChannel;
     use crate::UpdateProduct;
+    use httpmock::Method::GET;
+    use httpmock::MockServer;
 
     #[test]
     fn package_managed_dir_detects_usr_local_bin() {
@@ -541,5 +575,36 @@ mod tests {
         assert!(!found.contains_key("README.txt"));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stage_raw_binary_writes_executable_file() {
+        let root = std::env::temp_dir().join(format!("wp-update-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create root");
+
+        let found = stage_raw_binary(b"#!/bin/sh\n", &root, "wp-inst").expect("stage raw binary");
+        assert!(found.contains_key("wp-inst"));
+        assert!(root.join("wp-inst").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn fetch_asset_bytes_keeps_raw_body_when_server_claims_gzip() {
+        let server = MockServer::start();
+        let expected = b"not-a-gzip-stream".to_vec();
+
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/artifact.tar.gz");
+            then.status(200)
+                .header("content-encoding", "gzip")
+                .body(expected.clone());
+        });
+
+        let bytes = fetch_asset_bytes(&server.url("/artifact.tar.gz"))
+            .await
+            .expect("fetch asset");
+        mock.assert();
+        assert_eq!(bytes, expected);
     }
 }

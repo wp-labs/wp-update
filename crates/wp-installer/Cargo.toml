@@ -1,6 +1,6 @@
 [package]
-name = "wp-installer"
-version = "0.1.3" # @gxl:set(version)
+name = "wp-inst"
+version = "0.1.5" # @gxl:set(version)
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
