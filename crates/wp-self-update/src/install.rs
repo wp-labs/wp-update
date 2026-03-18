@@ -1,4 +1,5 @@
 use crate::fetch::is_retryable_status;
+use crate::SourceConfig;
 use flate2::read::GzDecoder;
 use orion_error::{ToStructError, UvsFrom};
 use std::collections::HashMap;
@@ -12,7 +13,6 @@ use std::time::Duration;
 use tar::Archive;
 use uuid::Uuid;
 use wp_error::run_error::{RunReason, RunResult};
-use crate::SourceConfig;
 
 pub(crate) fn resolve_install_dir(raw: Option<&Path>) -> RunResult<PathBuf> {
     let base = if let Some(raw) = raw {
@@ -451,8 +451,8 @@ pub(crate) struct InstalledBin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::UpdateProduct;
     use crate::UpdateChannel;
+    use crate::UpdateProduct;
 
     #[test]
     fn package_managed_dir_detects_usr_local_bin() {

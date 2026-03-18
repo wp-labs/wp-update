@@ -28,10 +28,7 @@ pub fn compare_versions_str(current: &str, latest: &str) -> RunResult<VersionRel
     Ok(compare_versions(&current_version, &latest_version))
 }
 
-pub fn validate_artifact_version_consistency(
-    version: &str,
-    artifact: &str,
-) -> RunResult<()> {
+pub fn validate_artifact_version_consistency(version: &str, artifact: &str) -> RunResult<()> {
     if artifact.contains(version) {
         return Ok(());
     }

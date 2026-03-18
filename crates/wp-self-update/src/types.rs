@@ -119,5 +119,4 @@ impl UpdateProduct {
             Self::Wproj => &["wproj"],
         }
     }
-
 }

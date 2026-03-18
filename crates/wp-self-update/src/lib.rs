@@ -6,8 +6,8 @@ mod platform;
 mod types;
 mod versioning;
 
-use orion_error::{ToStructError, UvsFrom};
 pub use manifest::updates_manifest_url;
+use orion_error::{ToStructError, UvsFrom};
 pub use types::{
     CheckReport, CheckRequest, ResolvedRelease, SourceConfig, UpdateChannel, UpdateProduct,
     UpdateReport, UpdateRequest, VersionRelation,
@@ -164,8 +164,8 @@ mod tests {
         create_temp_update_dir, extract_artifact, find_extracted_bins, install_bins, rollback_bins,
         run_health_check,
     };
-    use flate2::Compression;
     use flate2::write::GzEncoder;
+    use flate2::Compression;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -179,7 +179,7 @@ mod tests {
         let encoder = GzEncoder::new(&mut out, Compression::default());
         let mut builder = Builder::new(encoder);
         for bin in UpdateProduct::Suite.bins() {
-            let body = if healthy || bin != "wproj" {
+            let body = if healthy || *bin != "wproj" {
                 format!("#!/bin/sh\necho \"{} {}\"\n", bin, version)
             } else {
                 "#!/bin/sh\nexit 1\n".to_string()

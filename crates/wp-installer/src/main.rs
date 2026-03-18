@@ -2,8 +2,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::env;
 use std::path::PathBuf;
 use wp_self_update::{
-    CheckReport, CheckRequest, SourceConfig, UpdateChannel, UpdateProduct, UpdateReport,
-    UpdateRequest, check, update,
+    check, update, CheckReport, CheckRequest, SourceConfig, UpdateChannel, UpdateProduct,
+    UpdateReport, UpdateRequest,
 };
 
 const DEFAULT_MANIFEST_BASE_URL_ENV: &str = "WP_INSTALLER_DEFAULT_BASE_URL";
@@ -241,7 +241,14 @@ fn print_check_report(
     println!("  Latest   : {}", report.latest_version);
     println!("  Target   : {}", report.platform_key);
     println!("  Artifact : {}", report.artifact);
-    println!("  Status   : {}", if report.update_available { "update available" } else { "up-to-date" });
+    println!(
+        "  Status   : {}",
+        if report.update_available {
+            "update available"
+        } else {
+            "up-to-date"
+        }
+    );
     Ok(())
 }
 
@@ -294,7 +301,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(source.channel, UpdateChannel::Beta);
-        assert_eq!(source.updates_base_url, "https://example.com/releases/wparse");
+        assert_eq!(
+            source.updates_base_url,
+            "https://example.com/releases/wparse"
+        );
         assert_eq!(source.updates_root, None);
     }
 
@@ -318,9 +328,18 @@ mod tests {
 
     #[test]
     fn product_specific_env_keys_are_stable() {
-        assert_eq!(product_base_url_env(Product::Wparse), "WP_INSTALLER_WPARSE_BASE_URL");
-        assert_eq!(product_root_env(Product::Wparse), "WP_INSTALLER_WPARSE_ROOT");
-        assert_eq!(product_base_url_env(Product::Suite), "WP_INSTALLER_SUITE_BASE_URL");
+        assert_eq!(
+            product_base_url_env(Product::Wparse),
+            "WP_INSTALLER_WPARSE_BASE_URL"
+        );
+        assert_eq!(
+            product_root_env(Product::Wparse),
+            "WP_INSTALLER_WPARSE_ROOT"
+        );
+        assert_eq!(
+            product_base_url_env(Product::Suite),
+            "WP_INSTALLER_SUITE_BASE_URL"
+        );
         assert_eq!(product_root_env(Product::Suite), "WP_INSTALLER_SUITE_ROOT");
     }
 }

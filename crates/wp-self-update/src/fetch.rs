@@ -1,11 +1,11 @@
+use crate::{
+    parse_v2_release, updates_manifest_path, updates_manifest_url, ResolvedRelease, SourceConfig,
+    UpdateChannel,
+};
 use orion_error::{ToStructError, UvsFrom};
 use reqwest::StatusCode;
 use std::time::Duration;
 use wp_error::run_error::{RunReason, RunResult};
-use crate::{
-    ResolvedRelease, SourceConfig, UpdateChannel, parse_v2_release, updates_manifest_path,
-    updates_manifest_url,
-};
 
 const FETCH_CONNECT_TIMEOUT_SECS: u64 = 5;
 const FETCH_REQUEST_TIMEOUT_SECS: u64 = 10;

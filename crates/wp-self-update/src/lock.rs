@@ -78,7 +78,7 @@ fn process_is_alive(pid: u32) -> bool {
             return true;
         }
         let errno = std::io::Error::last_os_error().raw_os_error();
-        return !matches!(errno, Some(libc::ESRCH));
+        !matches!(errno, Some(libc::ESRCH))
     }
     #[cfg(not(unix))]
     {
