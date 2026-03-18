@@ -1,12 +1,18 @@
 mod fetch;
 mod install;
 mod lock;
+mod manifest;
+mod platform;
+mod types;
+mod versioning;
 
 use orion_error::{ToStructError, UvsFrom};
-pub use wp_update_core::{
-    CheckReport, CheckRequest, SourceConfig, UpdateChannel, UpdateProduct, UpdateReport,
-    UpdateRequest, VersionRelation, compare_versions_str, relation_message, updates_manifest_url,
+pub use manifest::updates_manifest_url;
+pub use types::{
+    CheckReport, CheckRequest, ResolvedRelease, SourceConfig, UpdateChannel, UpdateProduct,
+    UpdateReport, UpdateRequest, VersionRelation,
 };
+pub use versioning::{compare_versions_str, relation_message};
 
 use fetch::load_release;
 use install::{
@@ -17,12 +23,11 @@ use install::{
 use lock::UpdateLock;
 use std::path::PathBuf;
 use wp_error::run_error::RunResult;
-use wp_update_core::validate_artifact_version_consistency;
 
 pub async fn check(request: CheckRequest) -> RunResult<CheckReport> {
     let channel = request.source.channel;
     let (release, source) = load_release(&request.source, channel).await?;
-    validate_artifact_version_consistency(&release.version, &release.artifact)?;
+    versioning::validate_artifact_version_consistency(&release.version, &release.artifact)?;
 
     let relation = compare_versions_str(&request.current_version, &release.version)?;
     Ok(CheckReport {
@@ -45,7 +50,7 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
     let product = request.product;
     let selected_bins = product.bins();
     let (release, source) = load_release(&request.source, channel).await?;
-    validate_artifact_version_consistency(&release.version, &release.artifact)?;
+    versioning::validate_artifact_version_consistency(&release.version, &release.artifact)?;
     validate_download_url(&release.artifact, &request.source)?;
 
     let relation = compare_versions_str(&request.current_version, &release.version)?;
@@ -71,7 +76,7 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
         return Err(wp_error::run_error::RunReason::from_conf()
             .to_err()
             .with_detail(format!(
-                "refusing to replace binaries under '{}'; looks like a package-managed install, rerun with --force if this is intentional",
+                "refusing to replace binaries under {}; looks like a package-managed install, rerun with --force if this is intentional",
                 install_dir.display()
             )));
     }
@@ -146,6 +151,11 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
         status: format!("installed (backup: {})", backup_dir.display()),
     })
 }
+
+#[doc(hidden)]
+pub use manifest::{parse_v2_release, updates_manifest_path};
+#[doc(hidden)]
+pub use versioning::validate_artifact_version_consistency;
 
 #[cfg(test)]
 mod tests {

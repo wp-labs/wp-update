@@ -2,8 +2,18 @@
 name = "wp-self-update"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+description = "Self-update execution library for wp-labs binaries"
+repository = "https://github.com/wp-labs/wp-update"
+readme = "README.md"
+keywords = ["self-update", "release", "installer", "cli"]
+categories = ["development-tools", "command-line-utilities"]
 
 [dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+semver = "1.0"
 flate2 = "1.1"
 hex = "0.4"
 libc = "0.2"
@@ -15,7 +25,6 @@ tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "time"] }
 uuid = { version = "1.19", features = ["v4"] }
 walkdir = "2.5"
 wp-error = "0.8"
-wp-update-core = { path = "../wp-update-core" }
 
 [dev-dependencies]
 flate2 = "1.1"

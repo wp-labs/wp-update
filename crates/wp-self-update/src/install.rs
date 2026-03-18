@@ -12,7 +12,7 @@ use std::time::Duration;
 use tar::Archive;
 use uuid::Uuid;
 use wp_error::run_error::{RunReason, RunResult};
-use wp_update_core::SourceConfig;
+use crate::SourceConfig;
 
 pub(crate) fn resolve_install_dir(raw: Option<&Path>) -> RunResult<PathBuf> {
     let base = if let Some(raw) = raw {
@@ -451,8 +451,8 @@ pub(crate) struct InstalledBin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wp_update_core::UpdateProduct;
-    use wp_update_core::UpdateChannel;
+    use crate::UpdateProduct;
+    use crate::UpdateChannel;
 
     #[test]
     fn package_managed_dir_detects_usr_local_bin() {

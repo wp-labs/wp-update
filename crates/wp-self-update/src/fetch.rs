@@ -2,7 +2,7 @@ use orion_error::{ToStructError, UvsFrom};
 use reqwest::StatusCode;
 use std::time::Duration;
 use wp_error::run_error::{RunReason, RunResult};
-use wp_update_core::{
+use crate::{
     ResolvedRelease, SourceConfig, UpdateChannel, parse_v2_release, updates_manifest_path,
     updates_manifest_url,
 };
