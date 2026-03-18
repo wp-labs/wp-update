@@ -1,0 +1,24 @@
+[package]
+name = "wp-self-update"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+flate2 = "1.1"
+hex = "0.4"
+libc = "0.2"
+orion-error = "0.6"
+reqwest = "0.13.2"
+sha2 = "0.10"
+tar = "0.4"
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "time"] }
+uuid = { version = "1.19", features = ["v4"] }
+walkdir = "2.5"
+wp-error = "0.8"
+wp-update-core = { path = "../wp-update-core" }
+
+[dev-dependencies]
+flate2 = "1.1"
+httpmock = "0.8"
+tempfile = "3.23"
+tar = "0.4"

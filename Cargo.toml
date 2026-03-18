@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/wp-update-core", "crates/wp-self-update", "crates/wp-installer"]
+resolver = "2"
