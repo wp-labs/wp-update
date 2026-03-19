@@ -34,6 +34,10 @@ pub enum SourceKind {
     GithubLatest {
         repo: GithubRepo,
     },
+    GithubTag {
+        repo: GithubRepo,
+        tag: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +142,13 @@ impl GithubRepo {
         format!(
             "https://api.github.com/repos/{}/{}/releases/latest",
             self.owner, self.name
+        )
+    }
+
+    pub fn tag_release_api_url(&self, tag: &str) -> String {
+        format!(
+            "https://api.github.com/repos/{}/{}/releases/tags/{}",
+            self.owner, self.name, tag
         )
     }
 }

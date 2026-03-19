@@ -140,7 +140,7 @@ fn is_allowed_artifact_host(host: &str, source: &SourceConfig) -> bool {
                 }
             }
         }
-        SourceKind::GithubLatest { repo } => {
+        SourceKind::GithubLatest { repo } | SourceKind::GithubTag { repo, .. } => {
             if let Ok(url) = reqwest::Url::parse(&repo.url) {
                 if url.host_str() == Some(host) {
                     return true;
@@ -241,7 +241,18 @@ impl DownloadProgress {
         match self {
             Self::Tty(progress) => {
                 let label = progress.message().to_string();
-                progress.finish_with_message(format!("downloaded {}", label));
+                let downloaded = progress.position();
+                let total = progress.length();
+                progress.finish_and_clear();
+                match total.filter(|total| *total > 0) {
+                    Some(total) => eprintln!(
+                        "Downloaded {}: {}/{}",
+                        label,
+                        HumanBytes(downloaded),
+                        HumanBytes(total)
+                    ),
+                    None => eprintln!("Downloaded {}: {}", label, HumanBytes(downloaded)),
+                }
             }
             Self::Text(progress) => progress.finish(),
         }

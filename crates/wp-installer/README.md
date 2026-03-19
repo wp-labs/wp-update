@@ -7,4 +7,5 @@ Examples:
 ```bash
 wp-inst check --base-url https://raw.githubusercontent.com/wp-labs/warp-parse/refs/heads/main/updates
 wp-inst --github https://github.com/wp-labs/wpl-check --latest
+wp-inst --github https://github.com/wp-labs/wpl-check --tag v0.1.7
 ```

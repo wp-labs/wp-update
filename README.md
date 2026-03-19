@@ -18,3 +18,9 @@ Install the latest GitHub release for a single-binary tool directly:
 ```bash
 wp-inst --github https://github.com/wp-labs/wpl-check --latest
 ```
+
+Install a specific GitHub release tag directly:
+
+```bash
+wp-inst --github https://github.com/wp-labs/wpl-check --tag v0.1.7
+```

@@ -47,10 +47,17 @@ struct SourceArgs {
     github: Option<String>,
     #[arg(
         long,
+        conflicts_with = "tag",
         default_value_t = false,
         help = "Resolve the latest GitHub release"
     )]
     latest: bool,
+    #[arg(
+        long,
+        conflicts_with = "latest",
+        help = "Resolve a specific GitHub release tag"
+    )]
+    tag: Option<String>,
     #[arg(long, default_value_t = false)]
     json: bool,
 }
@@ -63,6 +70,7 @@ impl Default for SourceArgs {
             updates_root: None,
             github: None,
             latest: false,
+            tag: None,
             json: false,
         }
     }
@@ -155,7 +163,7 @@ async fn run_check(args: CheckArgs) -> Result<(), Box<dyn std::error::Error>> {
         product: product_label_for_source(&source),
         source,
         current_version: current_version_or_default(&args.request, "0.0.0"),
-        branch: source_branch_name(&args.request.source).to_string(),
+        branch: source_branch_name(&args.request.source),
     })
     .await?;
     print_check_report(&args.request.source, &report)?;
@@ -180,13 +188,13 @@ async fn run_apply(action: &str, args: ApplyArgs) -> Result<(), Box<dyn std::err
 }
 
 async fn run_direct(args: DirectArgs) -> Result<(), Box<dyn std::error::Error>> {
-    if args.source.github.is_none() && !args.source.latest {
+    if args.source.github.is_none() && !args.source.latest && args.source.tag.is_none() {
         return Err(
-            "either provide a subcommand or use --github <repo> --latest for direct install".into(),
+            "either provide a subcommand or use --github <repo> with --latest or --tag <tag> for direct install".into(),
         );
     }
     if args.source.github.is_none() {
-        return Err("--latest requires --github <repo>".into());
+        return Err("GitHub release selection requires --github <repo>".into());
     }
 
     let source = resolve_source_config(&args.source)?;
@@ -213,11 +221,11 @@ fn resolve_source_config(source: &SourceArgs) -> Result<SourceConfig, Box<dyn st
         if source.updates_base_url.is_some() || source.updates_root.is_some() {
             return Err("--github cannot be combined with --base-url or --local-root".into());
         }
-        if !source.latest {
-            return Err("--github currently requires --latest".into());
+        if source.latest == source.tag.is_some() {
+            return Err("--github requires exactly one of --latest or --tag <tag>".into());
         }
         if source.channel != Channel::Stable {
-            return Err("--github --latest does not support --channel; omit it".into());
+            return Err("--github release selection does not support --channel; omit it".into());
         }
 
         let repo = GithubRepo::parse(
@@ -230,12 +238,25 @@ fn resolve_source_config(source: &SourceArgs) -> Result<SourceConfig, Box<dyn st
 
         return Ok(SourceConfig {
             channel: UpdateChannel::Stable,
-            kind: SourceKind::GithubLatest { repo },
+            kind: if source.latest {
+                SourceKind::GithubLatest { repo }
+            } else {
+                SourceKind::GithubTag {
+                    repo,
+                    tag: source
+                        .tag
+                        .clone()
+                        .ok_or_else(|| "missing GitHub release tag".to_string())?,
+                }
+            },
         });
     }
 
     if source.latest {
         return Err("--latest requires --github <repo>".into());
+    }
+    if source.tag.is_some() {
+        return Err("--tag requires --github <repo>".into());
     }
 
     let defaults = default_source_overrides();
@@ -282,23 +303,27 @@ fn current_version_or_default(args: &RequestArgs, default: &str) -> String {
 fn default_update_target(source: &SourceConfig) -> UpdateTarget {
     match &source.kind {
         SourceKind::Manifest { .. } => UpdateTarget::Auto,
-        SourceKind::GithubLatest { repo } => UpdateTarget::Bins(vec![repo.name.clone()]),
+        SourceKind::GithubLatest { repo } | SourceKind::GithubTag { repo, .. } => {
+            UpdateTarget::Bins(vec![repo.name.clone()])
+        }
     }
 }
 
 fn product_label_for_source(source: &SourceConfig) -> String {
     match &source.kind {
         SourceKind::Manifest { .. } => CUSTOM_PRODUCT_LABEL.to_string(),
-        SourceKind::GithubLatest { repo } => repo.name.clone(),
+        SourceKind::GithubLatest { repo } | SourceKind::GithubTag { repo, .. } => repo.name.clone(),
     }
 }
 
-fn source_branch_name(source: &SourceArgs) -> &'static str {
+fn source_branch_name(source: &SourceArgs) -> String {
     if source.github.is_some() && source.latest {
-        "github-latest"
-    } else {
-        "installer"
+        return "main".to_string();
     }
+    if let Some(tag) = &source.tag {
+        return tag.clone();
+    }
+    "installer".to_string()
 }
 
 fn print_check_report(
@@ -309,7 +334,7 @@ fn print_check_report(
         println!("{}", serde_json::to_string_pretty(report)?);
         return Ok(());
     }
-    println!("wp-inst check");
+    println!("{} check", display_product_label(&report.product));
     println!("  Channel  : {}", report.channel);
     println!("  Current  : {}", report.current_version);
     println!("  Latest   : {}", report.latest_version);
@@ -335,7 +360,7 @@ fn print_update_report(
         println!("{}", serde_json::to_string_pretty(report)?);
         return Ok(());
     }
-    println!("wp-inst {}", action);
+    println!("{} {}", display_product_label(&report.product), action);
     println!("  Channel  : {}", report.channel);
     println!("  Current  : {}", report.current_version);
     println!("  Latest   : {}", report.latest_version);
@@ -343,6 +368,14 @@ fn print_update_report(
     println!("  Artifact : {}", report.artifact);
     println!("  Status   : {}", report.status);
     Ok(())
+}
+
+fn display_product_label(product: &str) -> &str {
+    if product == CUSTOM_PRODUCT_LABEL {
+        "wp-inst"
+    } else {
+        product
+    }
 }
 
 #[cfg(test)]
@@ -357,6 +390,7 @@ mod tests {
             updates_root: None,
             github: None,
             latest: false,
+            tag: None,
             json: false,
         })
         .unwrap();
@@ -382,6 +416,7 @@ mod tests {
             updates_root: None,
             github: None,
             latest: false,
+            tag: None,
             json: false,
         })
         .unwrap_err();
@@ -426,5 +461,76 @@ mod tests {
             Some("https://github.com/wp-labs/wpl-check")
         );
         assert!(cli.direct.source.latest);
+        assert_eq!(cli.direct.source.tag, None);
+    }
+
+    #[test]
+    fn cli_accepts_direct_github_tag_install() {
+        let cli = Cli::try_parse_from([
+            "wp-inst",
+            "--github",
+            "https://github.com/wp-labs/wpl-check",
+            "--tag",
+            "v0.1.7",
+        ])
+        .expect("parse cli");
+
+        assert!(cli.command.is_none());
+        assert_eq!(
+            cli.direct.source.github.as_deref(),
+            Some("https://github.com/wp-labs/wpl-check")
+        );
+        assert!(!cli.direct.source.latest);
+        assert_eq!(cli.direct.source.tag.as_deref(), Some("v0.1.7"));
+    }
+
+    #[test]
+    fn resolve_source_config_builds_github_tag_source() {
+        let source = resolve_source_config(&SourceArgs {
+            channel: Channel::Stable,
+            updates_base_url: None,
+            updates_root: None,
+            github: Some("https://github.com/wp-labs/wpl-check".to_string()),
+            latest: false,
+            tag: Some("v0.1.7".to_string()),
+            json: false,
+        })
+        .unwrap();
+
+        match source.kind {
+            SourceKind::GithubTag { repo, tag } => {
+                assert_eq!(repo.name, "wpl-check");
+                assert_eq!(tag, "v0.1.7");
+            }
+            _ => panic!("expected github tag source"),
+        }
+    }
+
+    #[test]
+    fn resolve_source_config_rejects_conflicting_github_selectors() {
+        let err = resolve_source_config(&SourceArgs {
+            channel: Channel::Stable,
+            updates_base_url: None,
+            updates_root: None,
+            github: Some("https://github.com/wp-labs/wpl-check".to_string()),
+            latest: true,
+            tag: Some("v0.1.7".to_string()),
+            json: false,
+        })
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("requires exactly one of --latest or --tag"));
+    }
+
+    #[test]
+    fn display_product_label_uses_github_repo_name() {
+        assert_eq!(display_product_label("wpl-check"), "wpl-check");
+    }
+
+    #[test]
+    fn display_product_label_falls_back_to_wp_inst_for_manifest_mode() {
+        assert_eq!(display_product_label(CUSTOM_PRODUCT_LABEL), "wp-inst");
     }
 }

@@ -51,8 +51,14 @@ pub(crate) async fn load_release(
         }
         SourceKind::GithubLatest { repo } => {
             let url = repo.latest_release_api_url();
-            let raw = fetch_github_latest_release_text(&client, &url).await?;
-            let release = parse_github_latest_release(&raw, repo, &url)?;
+            let raw = fetch_github_release_text(&client, &url).await?;
+            let release = parse_github_release(&raw, repo, &url)?;
+            Ok((release, url))
+        }
+        SourceKind::GithubTag { repo, tag } => {
+            let url = repo.tag_release_api_url(tag);
+            let raw = fetch_github_release_text(&client, &url).await?;
+            let release = parse_github_release(&raw, repo, &url)?;
             Ok((release, url))
         }
     }
@@ -71,10 +77,7 @@ struct GithubReleaseAsset {
     digest: Option<String>,
 }
 
-async fn fetch_github_latest_release_text(
-    client: &reqwest::Client,
-    url: &str,
-) -> RunResult<String> {
+async fn fetch_github_release_text(client: &reqwest::Client, url: &str) -> RunResult<String> {
     let request = client
         .get(url)
         .header("accept", "application/vnd.github+json")
@@ -143,16 +146,11 @@ async fn fetch_text_from_request(
     )))
 }
 
-fn parse_github_latest_release(
-    raw: &str,
-    repo: &GithubRepo,
-    source: &str,
-) -> RunResult<ResolvedRelease> {
+fn parse_github_release(raw: &str, repo: &GithubRepo, source: &str) -> RunResult<ResolvedRelease> {
     let release = serde_json::from_str::<GithubLatestRelease>(raw).map_err(|e| {
-        RunReason::from_conf().to_err().with_detail(format!(
-            "invalid GitHub latest release JSON {}: {}",
-            source, e
-        ))
+        RunReason::from_conf()
+            .to_err()
+            .with_detail(format!("invalid GitHub release JSON {}: {}", source, e))
     })?;
 
     let target = crate::platform::detect_target_triple_v2()?;

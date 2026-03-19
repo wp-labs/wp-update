@@ -154,17 +154,18 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
     })
 }
 
-fn source_channel_name(source: &SourceConfig) -> &'static str {
+fn source_channel_name(source: &SourceConfig) -> String {
     match source.kind {
-        SourceKind::Manifest { .. } => source.channel.as_str(),
-        SourceKind::GithubLatest { .. } => "latest",
+        SourceKind::Manifest { .. } => source.channel.as_str().to_string(),
+        SourceKind::GithubLatest { .. } => "main".to_string(),
+        SourceKind::GithubTag { ref tag, .. } => tag.clone(),
     }
 }
 
 fn source_format_name(source: &SourceConfig) -> &'static str {
     match source.kind {
         SourceKind::Manifest { .. } => "v2",
-        SourceKind::GithubLatest { .. } => "github-release",
+        SourceKind::GithubLatest { .. } | SourceKind::GithubTag { .. } => "github-release",
     }
 }
 
