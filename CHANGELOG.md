@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-03-24
+
+### Added
+- Added direct skill mode via `wp-inst --github <repo> --latest|--tag <tag> --path <repo-subdir> --skill`, installing the selected skill from a release archive into default skills directories.
+- Skill installs follow the `wp-skills` shell workflow and honor `WP_SKILLS_PLATFORM` for default target selection.
+
+### Changed
+- Direct GitHub binary installation now defaults to the latest release when `--tag` and `--latest` are both omitted.
+- Switched skill installation from GitHub tree snapshots to versioned GitHub release archives selected by `--latest` or `--tag`.
+- Skill installation now defaults to the latest release when `--tag` and `--latest` are both omitted.
+- Refactored `wp-inst` source layout to split CLI parsing, source resolution, reporting, and skill installation responsibilities into smaller modules.
+- Reduced installer-local archive handling by reusing `wp-self-update` release metadata loading and archive download/extract helpers.
+
 ## [0.1.6] - 2026-03-19
 
 ### Added

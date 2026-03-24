@@ -105,6 +105,18 @@ pub struct ResolvedRelease {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+pub struct GithubReleaseInfo {
+    pub tag_name: String,
+    pub assets: Vec<GithubReleaseAssetInfo>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct GithubReleaseAssetInfo {
+    pub name: String,
+    pub browser_download_url: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct GithubRepo {
     pub owner: String,
     pub name: String,

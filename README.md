@@ -16,11 +16,18 @@ Shared update crates for wp-labs binaries.
 Install the latest GitHub release for a single-binary tool directly:
 
 ```bash
-wp-inst --github https://github.com/wp-labs/wpl-check --latest
+wp-inst --github https://github.com/wp-labs/wpl-check
 ```
 
 Install a specific GitHub release tag directly:
 
 ```bash
 wp-inst --github https://github.com/wp-labs/wpl-check --tag v0.1.7
+```
+
+Install a skill into Codex or Claude skills directories:
+
+```bash
+wp-inst --github wp-labs/wp-skills --tag v0.1.2 --path skills/warpparse-log-engineering --skill
+wp-inst --github wp-labs/wp-skills --path skills/wpl-rule-check --skill
 ```

@@ -1,6 +1,6 @@
 use crate::{
-    parse_v2_release, updates_manifest_path, updates_manifest_url, GithubRepo, ResolvedRelease,
-    SourceConfig, SourceKind, UpdateChannel,
+    parse_v2_release, updates_manifest_path, updates_manifest_url, GithubReleaseAssetInfo,
+    GithubReleaseInfo, GithubRepo, ResolvedRelease, SourceConfig, SourceKind, UpdateChannel,
 };
 use orion_error::{ToStructError, UvsFrom};
 use reqwest::StatusCode;
@@ -84,6 +84,28 @@ async fn fetch_github_release_text(client: &reqwest::Client, url: &str) -> RunRe
         .header("x-github-api-version", "2022-11-28")
         .header("user-agent", "wp-inst");
     fetch_text_from_request(request, url, false).await
+}
+
+pub async fn load_github_release_info(
+    repo: &GithubRepo,
+    tag: Option<&str>,
+) -> RunResult<GithubReleaseInfo> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(FETCH_CONNECT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(FETCH_REQUEST_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| {
+            RunReason::from_conf()
+                .to_err()
+                .with_detail(format!("failed to build HTTP client: {}", e))
+        })?;
+
+    let url = match tag {
+        Some(tag) => repo.tag_release_api_url(tag),
+        None => repo.latest_release_api_url(),
+    };
+    let raw = fetch_github_release_text(&client, &url).await?;
+    parse_github_release_info(&raw, &url)
 }
 
 async fn fetch_text(
@@ -185,6 +207,26 @@ fn parse_github_release(raw: &str, repo: &GithubRepo, source: &str) -> RunResult
     })
 }
 
+fn parse_github_release_info(raw: &str, source: &str) -> RunResult<GithubReleaseInfo> {
+    let release = serde_json::from_str::<GithubLatestRelease>(raw).map_err(|e| {
+        RunReason::from_conf()
+            .to_err()
+            .with_detail(format!("invalid GitHub release JSON {}: {}", source, e))
+    })?;
+
+    Ok(GithubReleaseInfo {
+        tag_name: release.tag_name,
+        assets: release
+            .assets
+            .into_iter()
+            .map(|asset| GithubReleaseAssetInfo {
+                name: asset.name,
+                browser_download_url: asset.browser_download_url,
+            })
+            .collect(),
+    })
+}
+
 fn select_github_release_asset<'a>(
     assets: &'a [GithubReleaseAsset],
     target: &str,
@@ -258,6 +300,28 @@ mod tests {
         assert_eq!(
             value,
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+    }
+
+    #[test]
+    fn parse_github_release_info_collects_assets() {
+        let info = parse_github_release_info(
+            r#"{
+              "tag_name": "v0.1.2",
+              "assets": [
+                {"name": "wp-skills-v0.1.2.tar.gz", "browser_download_url": "https://example.com/a.tar.gz", "digest": null}
+              ]
+            }"#,
+            "test",
+        )
+        .unwrap();
+
+        assert_eq!(info.tag_name, "v0.1.2");
+        assert_eq!(info.assets.len(), 1);
+        assert_eq!(info.assets[0].name, "wp-skills-v0.1.2.tar.gz");
+        assert_eq!(
+            info.assets[0].browser_download_url,
+            "https://example.com/a.tar.gz"
         );
     }
 

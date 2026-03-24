@@ -9,8 +9,9 @@ mod versioning;
 pub use manifest::updates_manifest_url;
 use orion_error::{ToStructError, UvsFrom};
 pub use types::{
-    CheckReport, CheckRequest, GithubRepo, ResolvedRelease, SourceConfig, SourceKind,
-    UpdateChannel, UpdateProduct, UpdateReport, UpdateRequest, UpdateTarget, VersionRelation,
+    CheckReport, CheckRequest, GithubReleaseAssetInfo, GithubReleaseInfo, GithubRepo,
+    ResolvedRelease, SourceConfig, SourceKind, UpdateChannel, UpdateProduct, UpdateReport,
+    UpdateRequest, UpdateTarget, VersionRelation,
 };
 pub use versioning::{compare_versions_str, relation_message};
 
@@ -245,6 +246,12 @@ fn resolve_target_bins(
     }
 }
 
+#[doc(hidden)]
+pub use fetch::load_github_release_info;
+#[doc(hidden)]
+pub use install::{
+    extract_artifact_archive as extract_tar_gz_archive, fetch_asset_bytes as download_asset_bytes,
+};
 #[doc(hidden)]
 pub use manifest::{parse_v2_release, updates_manifest_path};
 #[doc(hidden)]

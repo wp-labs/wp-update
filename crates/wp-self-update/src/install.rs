@@ -151,7 +151,7 @@ fn is_allowed_artifact_host(host: &str, source: &SourceConfig) -> bool {
     false
 }
 
-pub(crate) async fn fetch_asset_bytes(url: &str) -> RunResult<Vec<u8>> {
+pub async fn fetch_asset_bytes(url: &str) -> RunResult<Vec<u8>> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(FETCH_ASSET_CONNECT_TIMEOUT_SECS))
         .timeout(Duration::from_secs(FETCH_ASSET_REQUEST_TIMEOUT_SECS))
@@ -419,7 +419,7 @@ pub(crate) fn create_temp_update_dir() -> RunResult<PathBuf> {
     Ok(dir)
 }
 
-pub(crate) fn extract_artifact_archive(bytes: &[u8], extract_root: &Path) -> RunResult<()> {
+pub fn extract_artifact_archive(bytes: &[u8], extract_root: &Path) -> RunResult<()> {
     let cursor = Cursor::new(bytes);
     let decoder = GzDecoder::new(cursor);
     let mut archive = Archive::new(decoder);
