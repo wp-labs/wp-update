@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const SKILLS_PLATFORM_ENV: &str = "WP_SKILLS_PLATFORM";
 
@@ -57,10 +58,56 @@ pub(super) fn install_skill_into_target(
 ) -> Result<InstalledSkill, Box<dyn std::error::Error>> {
     fs::create_dir_all(target_base)?;
     let dst_dir = target_base.join(skill_name);
-    if dst_dir.exists() {
-        fs::remove_dir_all(&dst_dir)?;
+    let staged_dir = unique_work_path(target_base, &format!(".{skill_name}.staging"))?;
+    copy_dir_recursive(src_dir, &staged_dir).map_err(|err| {
+        let _ = fs::remove_dir_all(&staged_dir);
+        err
+    })?;
+
+    let backup_dir = if dst_dir.exists() {
+        let backup_dir = unique_work_path(target_base, &format!(".{skill_name}.backup"))?;
+        fs::rename(&dst_dir, &backup_dir).map_err(|e| {
+            let _ = fs::remove_dir_all(&staged_dir);
+            format!(
+                "failed to move existing skill {} to backup {}: {}",
+                dst_dir.display(),
+                backup_dir.display(),
+                e
+            )
+        })?;
+        Some(backup_dir)
+    } else {
+        None
+    };
+
+    if let Err(err) = fs::rename(&staged_dir, &dst_dir) {
+        let _ = fs::remove_dir_all(&staged_dir);
+        let _ = fs::remove_dir_all(&dst_dir);
+        if let Some(backup_dir) = &backup_dir {
+            if let Err(restore_err) = fs::rename(backup_dir, &dst_dir) {
+                return Err(format!(
+                    "failed to activate skill {} at {}: {}; additionally failed to restore backup {}: {}",
+                    skill_name,
+                    dst_dir.display(),
+                    err,
+                    backup_dir.display(),
+                    restore_err
+                )
+                .into());
+            }
+        }
+        return Err(format!(
+            "failed to activate skill {} at {}: {}",
+            skill_name,
+            dst_dir.display(),
+            err
+        )
+        .into());
     }
-    copy_dir_recursive(src_dir, &dst_dir)?;
+
+    if let Some(backup_dir) = backup_dir {
+        let _ = fs::remove_dir_all(&backup_dir);
+    }
 
     Ok(InstalledSkill {
         platform: platform_name(target_base),
@@ -111,6 +158,33 @@ fn collect_relative_files(
         files.push(path.strip_prefix(root)?.to_path_buf());
     }
     Ok(())
+}
+
+fn unique_work_path(
+    target_base: &Path,
+    prefix: &str,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let base_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| format!("system clock error while creating work path: {}", e))?
+        .as_nanos();
+    for attempt in 0..100u32 {
+        let candidate = target_base.join(format!(
+            "{}-{}-{}-{}",
+            prefix,
+            std::process::id(),
+            base_nanos,
+            attempt
+        ));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(format!(
+        "failed to allocate a unique work path under {}",
+        target_base.display()
+    )
+    .into())
 }
 
 fn platform_name(target_base: &Path) -> String {
@@ -180,5 +254,31 @@ mod tests {
             installed.files,
             vec![PathBuf::from("SKILL.md"), PathBuf::from("nested/info.txt")]
         );
+    }
+
+    #[test]
+    fn replacing_existing_skill_swaps_directory_contents() {
+        let src = tempdir().unwrap();
+        let target = tempdir().unwrap();
+
+        fs::create_dir_all(src.path().join("nested")).unwrap();
+        fs::write(src.path().join("SKILL.md"), "new").unwrap();
+        fs::write(src.path().join("nested/info.txt"), "nested").unwrap();
+
+        let existing = target.path().join("warpparse-log-engineering");
+        fs::create_dir_all(existing.join("old")).unwrap();
+        fs::write(existing.join("SKILL.md"), "old").unwrap();
+        fs::write(existing.join("old/legacy.txt"), "legacy").unwrap();
+
+        let installed =
+            install_skill_into_target("warpparse-log-engineering", src.path(), target.path())
+                .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(installed.location.join("SKILL.md")).unwrap(),
+            "new"
+        );
+        assert!(!installed.location.join("old/legacy.txt").exists());
+        assert!(installed.location.join("nested/info.txt").exists());
     }
 }

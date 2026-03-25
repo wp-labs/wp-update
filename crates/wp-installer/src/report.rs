@@ -1,12 +1,12 @@
-use crate::cli::SourceArgs;
+use crate::skills::{SkillCheckReport, SkillInstallReport};
 use crate::source::CUSTOM_PRODUCT_LABEL;
 use wp_self_update::{CheckReport, UpdateReport};
 
 pub(crate) fn print_check_report(
-    source: &SourceArgs,
+    json: bool,
     report: &CheckReport,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if source.json {
+    if json {
         println!("{}", serde_json::to_string_pretty(report)?);
         return Ok(());
     }
@@ -29,10 +29,10 @@ pub(crate) fn print_check_report(
 
 pub(crate) fn print_update_report(
     action: &str,
-    source: &SourceArgs,
+    json: bool,
     report: &UpdateReport,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if source.json {
+    if json {
         println!("{}", serde_json::to_string_pretty(report)?);
         return Ok(());
     }
@@ -43,6 +43,53 @@ pub(crate) fn print_update_report(
     println!("  Install  : {}", report.install_dir);
     println!("  Artifact : {}", report.artifact);
     println!("  Status   : {}", report.status);
+    Ok(())
+}
+
+pub(crate) fn print_skill_check_report(
+    json: bool,
+    report: &SkillCheckReport,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(report)?);
+        return Ok(());
+    }
+    println!("{} check", report.skill);
+    println!("  Repo     : {}", report.repo);
+    println!("  Path     : {}", report.path);
+    println!("  Tag      : {}", report.tag);
+    println!("  Archive  : {}", report.archive);
+    println!("  Status   : {}", report.status);
+    Ok(())
+}
+
+pub(crate) fn print_skill_install_report(
+    json: bool,
+    report: &SkillInstallReport,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(report)?);
+        return Ok(());
+    }
+    println!("Installed: {}", report.skill);
+    println!("Source   : {}", report.repo);
+    println!("Path     : {}", report.path);
+    println!("Tag      : {}", report.tag);
+    println!("Archive  : {}", report.archive);
+    for install in &report.locations {
+        println!("Platform : {}", install.platform);
+        println!("Location : {}", install.location);
+        if install.files.is_empty() {
+            continue;
+        }
+        println!("Files    :");
+        for file in install.files.iter().take(20) {
+            println!("  - {}", file);
+        }
+        if install.files.len() > 20 {
+            println!("  - ... and {} more", install.files.len() - 20);
+        }
+    }
     Ok(())
 }
 

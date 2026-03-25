@@ -28,6 +28,13 @@ wp-inst --github https://github.com/wp-labs/wpl-check --tag v0.1.7
 Install a skill into Codex or Claude skills directories:
 
 ```bash
-wp-inst --github wp-labs/wp-skills --tag v0.1.2 --path skills/warpparse-log-engineering --skill
-wp-inst --github wp-labs/wp-skills --path skills/wpl-rule-check --skill
+wp-inst --skill --github wp-labs/wp-skills --tag v0.1.2 --path skills/warpparse-log-engineering
+wp-inst --skill --github wp-labs/wp-skills --path skills/wpl-rule-check
+```
+
+Check a release without installing:
+
+```bash
+wp-inst check --github wp-labs/wpl-check
+wp-inst check --skill --github wp-labs/wp-skills --path skills/wpl-rule-check
 ```

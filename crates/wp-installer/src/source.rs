@@ -1,4 +1,4 @@
-use crate::cli::{Channel, RequestArgs, SourceArgs};
+use crate::cli::{Channel, CheckArgs, CommonArgs, InstallArgs};
 use std::env;
 use std::path::PathBuf;
 use wp_self_update::{GithubRepo, SourceConfig, SourceKind, UpdateChannel, UpdateTarget};
@@ -13,23 +13,27 @@ struct SourceDefaults {
     updates_root: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone)]
+enum ManifestSourceRef {
+    BaseUrl(String),
+    LocalRoot(PathBuf),
+}
+
 pub(crate) fn resolve_source_config(
-    source: &SourceArgs,
+    args: &CommonArgs,
 ) -> Result<SourceConfig, Box<dyn std::error::Error>> {
-    if source.github.is_some() {
-        if source.updates_base_url.is_some() || source.updates_root.is_some() {
-            return Err("--github cannot be combined with --base-url or --local-root".into());
+    if args.github.is_some() {
+        if args.source.is_some() || args.updates_base_url.is_some() || args.updates_root.is_some() {
+            return Err(
+                "--github cannot be combined with --source, --base-url, or --local-root".into(),
+            );
         }
-        if source.latest && source.tag.is_some() {
-            return Err("--github cannot combine --latest with --tag <tag>".into());
-        }
-        if source.channel != Channel::Stable {
+        if args.effective_channel() != Channel::Stable {
             return Err("--github release selection does not support --channel; omit it".into());
         }
 
         let repo = GithubRepo::parse(
-            source
-                .github
+            args.github
                 .as_deref()
                 .ok_or_else(|| "missing GitHub repository".to_string())?,
         )
@@ -37,37 +41,51 @@ pub(crate) fn resolve_source_config(
 
         return Ok(SourceConfig {
             channel: UpdateChannel::Stable,
-            kind: match source.tag.clone() {
+            kind: match args.tag.clone() {
                 Some(tag) => SourceKind::GithubTag { repo, tag },
                 None => SourceKind::GithubLatest { repo },
             },
         });
     }
 
-    if source.latest {
-        return Err("--latest requires --github <repo>".into());
-    }
-    if source.tag.is_some() {
+    if args.tag.is_some() || args.latest {
         return Err("--tag requires --github <repo>".into());
     }
 
     let defaults = default_source_overrides();
-    let updates_root = source.updates_root.clone().or(defaults.updates_root);
-    let updates_base_url = source
+    let source_ref = args
+        .source
+        .as_deref()
+        .map(parse_manifest_source_ref)
+        .transpose()?;
+
+    let updates_root = args
+        .updates_root
+        .clone()
+        .or_else(|| match &source_ref {
+            Some(ManifestSourceRef::LocalRoot(path)) => Some(path.clone()),
+            _ => None,
+        })
+        .or(defaults.updates_root);
+    let updates_base_url = args
         .updates_base_url
         .clone()
+        .or_else(|| match &source_ref {
+            Some(ManifestSourceRef::BaseUrl(url)) => Some(url.clone()),
+            _ => None,
+        })
         .or(defaults.updates_base_url);
 
     if updates_root.is_none() && updates_base_url.is_none() {
         return Err(format!(
-            "manifest source is required: provide --base-url, --local-root, or set {} / {}",
+            "manifest source is required: provide --source, --base-url, --local-root, or set {} / {}",
             DEFAULT_MANIFEST_BASE_URL_ENV, DEFAULT_MANIFEST_ROOT_ENV
         )
         .into());
     }
 
     Ok(SourceConfig {
-        channel: match source.channel {
+        channel: match args.effective_channel() {
             Channel::Stable => UpdateChannel::Stable,
             Channel::Beta => UpdateChannel::Beta,
             Channel::Alpha => UpdateChannel::Alpha,
@@ -79,7 +97,13 @@ pub(crate) fn resolve_source_config(
     })
 }
 
-pub(crate) fn current_version_or_default(args: &RequestArgs, default: &str) -> String {
+pub(crate) fn current_check_version_or_default(args: &CheckArgs, default: &str) -> String {
+    args.current_version
+        .clone()
+        .unwrap_or_else(|| default.to_string())
+}
+
+pub(crate) fn current_install_version_or_default(args: &InstallArgs, default: &str) -> String {
     args.current_version
         .clone()
         .unwrap_or_else(|| default.to_string())
@@ -101,14 +125,25 @@ pub(crate) fn product_label_for_source(source: &SourceConfig) -> String {
     }
 }
 
-pub(crate) fn source_branch_name(source: &SourceArgs) -> String {
-    if source.github.is_some() && source.latest {
+pub(crate) fn source_branch_name(args: &CommonArgs) -> String {
+    if args.github.is_some() && args.tag.is_none() {
         return "main".to_string();
     }
-    if let Some(tag) = &source.tag {
+    if let Some(tag) = &args.tag {
         return tag.clone();
     }
     "installer".to_string()
+}
+
+fn parse_manifest_source_ref(raw: &str) -> Result<ManifestSourceRef, Box<dyn std::error::Error>> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err("--source cannot be empty".into());
+    }
+    if value.starts_with("https://") || value.starts_with("http://") {
+        return Ok(ManifestSourceRef::BaseUrl(value.to_string()));
+    }
+    Ok(ManifestSourceRef::LocalRoot(PathBuf::from(value)))
 }
 
 fn default_source_overrides() -> SourceDefaults {
@@ -121,17 +156,14 @@ fn default_source_overrides() -> SourceDefaults {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::{ArtifactKind, CommonArgs, KindArgs};
 
     #[test]
     fn resolve_source_config_builds_channel_relative_manifest_root() {
-        let source = resolve_source_config(&SourceArgs {
-            channel: Channel::Beta,
-            updates_base_url: Some("https://example.com/releases/warp-parse".to_string()),
-            updates_root: None,
-            github: None,
-            latest: false,
-            tag: None,
-            json: false,
+        let source = resolve_source_config(&CommonArgs {
+            source: Some("./updates".to_string()),
+            channel: Some(Channel::Beta),
+            ..CommonArgs::default()
         })
         .unwrap();
 
@@ -141,8 +173,8 @@ mod tests {
                 updates_base_url,
                 updates_root,
             } => {
-                assert_eq!(updates_base_url, "https://example.com/releases/warp-parse");
-                assert_eq!(updates_root, None);
+                assert_eq!(updates_base_url, "");
+                assert_eq!(updates_root, Some(PathBuf::from("./updates")));
             }
             _ => panic!("expected manifest source"),
         }
@@ -150,30 +182,16 @@ mod tests {
 
     #[test]
     fn resolve_source_config_rejects_missing_manifest_source() {
-        let err = resolve_source_config(&SourceArgs {
-            channel: Channel::Stable,
-            updates_base_url: None,
-            updates_root: None,
-            github: None,
-            latest: false,
-            tag: None,
-            json: false,
-        })
-        .unwrap_err();
-
+        let err = resolve_source_config(&CommonArgs::default()).unwrap_err();
         assert!(err.to_string().contains("manifest source is required"));
     }
 
     #[test]
     fn resolve_source_config_builds_github_tag_source() {
-        let source = resolve_source_config(&SourceArgs {
-            channel: Channel::Stable,
-            updates_base_url: None,
-            updates_root: None,
+        let source = resolve_source_config(&CommonArgs {
             github: Some("https://github.com/wp-labs/wpl-check".to_string()),
-            latest: false,
             tag: Some("v0.1.7".to_string()),
-            json: false,
+            ..CommonArgs::default()
         })
         .unwrap();
 
@@ -187,33 +205,10 @@ mod tests {
     }
 
     #[test]
-    fn resolve_source_config_rejects_conflicting_github_selectors() {
-        let err = resolve_source_config(&SourceArgs {
-            channel: Channel::Stable,
-            updates_base_url: None,
-            updates_root: None,
-            github: Some("https://github.com/wp-labs/wpl-check".to_string()),
-            latest: true,
-            tag: Some("v0.1.7".to_string()),
-            json: false,
-        })
-        .unwrap_err();
-
-        assert!(err
-            .to_string()
-            .contains("cannot combine --latest with --tag"));
-    }
-
-    #[test]
     fn resolve_source_config_defaults_github_to_latest() {
-        let source = resolve_source_config(&SourceArgs {
-            channel: Channel::Stable,
-            updates_base_url: None,
-            updates_root: None,
+        let source = resolve_source_config(&CommonArgs {
             github: Some("https://github.com/wp-labs/wpl-check".to_string()),
-            latest: false,
-            tag: None,
-            json: false,
+            ..CommonArgs::default()
         })
         .unwrap();
 
@@ -223,5 +218,12 @@ mod tests {
             }
             _ => panic!("expected github latest source"),
         }
+    }
+
+    #[test]
+    fn common_args_default_to_binary_mode() {
+        let args = CommonArgs::default();
+        assert_eq!(args.artifact_kind(), ArtifactKind::Bin);
+        assert_eq!(args.kind, KindArgs::default());
     }
 }

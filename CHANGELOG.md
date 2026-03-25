@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-03-25
+
+### Added
+- Added `wp-inst check --skill --github <repo> --path <repo-subdir>` to validate skill release archives and requested skill paths before installation.
+- Added dedicated JSON/text reports for skill checks and installs.
+
+### Changed
+- Simplified `wp-inst` CLI around `install` and `check`, with bare `wp-inst` defaulting to `install` and `update` retained as an alias of `install`.
+- Simplified top-level flags to prefer `--github`, `--source`, `--tag`, `--dir`, `--bin`, and `--skill`, while keeping legacy manifest flags hidden for compatibility.
+- Unified artifact selection so binary mode defaults to `--bin` and GitHub installs default to the latest release when `--tag` is omitted.
+
+### Fixed
+- Skill installs now stage into a temporary directory before swapping into place, avoiding destructive replacement of an existing skill on partial failure.
+- Skill checks now reuse a single resolved release/archive instead of reloading GitHub release metadata twice.
+- Skill mode now rejects binary-only flags such as `--yes`, `--dir`, and explicit `--channel`, and binary mode rejects stray `--path` values unless `--skill` is selected.
+- Skill activation errors now report backup-restore failures explicitly when rollback cannot complete.
+
 ## [0.1.8] - 2026-03-24
 
 ### Added

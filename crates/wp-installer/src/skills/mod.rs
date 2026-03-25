@@ -3,19 +3,76 @@ mod target;
 
 pub(crate) use source::SkillInstallArgs;
 
+use serde::Serialize;
 use source::{parse_skill_source, SkillSource};
 use std::fs;
 use std::path::{Path, PathBuf};
-use target::{install_skill_into_target, resolve_default_target_dirs, InstalledSkill};
+use target::{install_skill_into_target, resolve_default_target_dirs};
 use tempfile::TempDir;
 use wp_self_update::{download_asset_bytes, extract_tar_gz_archive, load_github_release_info};
 
+#[derive(Debug, Serialize)]
+pub(crate) struct SkillCheckReport {
+    pub(crate) skill: String,
+    pub(crate) repo: String,
+    pub(crate) path: String,
+    pub(crate) tag: String,
+    pub(crate) archive: String,
+    pub(crate) status: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct SkillInstallLocationReport {
+    pub(crate) platform: String,
+    pub(crate) location: String,
+    pub(crate) files: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct SkillInstallReport {
+    pub(crate) skill: String,
+    pub(crate) repo: String,
+    pub(crate) path: String,
+    pub(crate) tag: String,
+    pub(crate) archive: String,
+    pub(crate) locations: Vec<SkillInstallLocationReport>,
+    pub(crate) status: String,
+}
+
+pub(crate) async fn check_skill(
+    args: SkillInstallArgs,
+) -> Result<SkillCheckReport, Box<dyn std::error::Error>> {
+    let (source, selector) = parse_skill_source(&args)?;
+    // Check validates that the requested path exists in the archive.
+    let (release, archive, _archive_dir, archive_root) =
+        download_repo_archive(&source, &selector).await?;
+    let skill_src = archive_root.join(&source.subdir);
+    if !skill_src.is_dir() {
+        return Err(format!(
+            "skill not found: {} (expected {})",
+            source.skill_name,
+            skill_src.display()
+        )
+        .into());
+    }
+
+    Ok(SkillCheckReport {
+        skill: source.skill_name,
+        repo: source.repo.url,
+        path: source.subdir.display().to_string(),
+        tag: release.tag_name,
+        archive,
+        status: "available".to_string(),
+    })
+}
+
 pub(crate) async fn install_skill(
     args: SkillInstallArgs,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<SkillInstallReport, Box<dyn std::error::Error>> {
     let (source, selector) = parse_skill_source(&args)?;
     let target_dirs = resolve_default_target_dirs()?;
-    let (_archive_dir, archive_root) = download_repo_archive(&source, &selector).await?;
+    let (release, archive, _archive_dir, archive_root) =
+        download_repo_archive(&source, &selector).await?;
     let skill_src = archive_root.join(&source.subdir);
     if !skill_src.is_dir() {
         return Err(format!(
@@ -29,37 +86,33 @@ pub(crate) async fn install_skill(
     let mut installs = Vec::new();
     for target_base in target_dirs {
         let installed = install_skill_into_target(&source.skill_name, &skill_src, &target_base)?;
-        installs.push(installed);
+        installs.push(SkillInstallLocationReport {
+            platform: installed.platform,
+            location: installed.location.display().to_string(),
+            files: installed
+                .files
+                .into_iter()
+                .map(|file| file.display().to_string())
+                .collect(),
+        });
     }
 
-    print_install_report(&source, &installs);
-    Ok(())
-}
-
-fn print_install_report(source: &SkillSource, installs: &[InstalledSkill]) {
-    println!("Installed: {}", source.skill_name);
-    println!("Source   : {}", source.repo.url);
-    println!("Path     : {}", source.subdir.display());
-    for install in installs {
-        println!("Platform : {}", install.platform);
-        println!("Location : {}", install.location.display());
-        if install.files.is_empty() {
-            continue;
-        }
-        println!("Files    :");
-        for file in install.files.iter().take(20) {
-            println!("  - {}", file.display());
-        }
-        if install.files.len() > 20 {
-            println!("  - ... and {} more", install.files.len() - 20);
-        }
-    }
+    Ok(SkillInstallReport {
+        skill: source.skill_name,
+        repo: source.repo.url,
+        path: source.subdir.display().to_string(),
+        tag: release.tag_name,
+        archive,
+        locations: installs,
+        status: "installed".to_string(),
+    })
 }
 
 async fn download_repo_archive(
     source: &SkillSource,
     selector: &source::SkillReleaseSelector,
-) -> Result<(TempDir, PathBuf), Box<dyn std::error::Error>> {
+) -> Result<(wp_self_update::GithubReleaseInfo, String, TempDir, PathBuf), Box<dyn std::error::Error>>
+{
     let release = load_github_release_info(
         &source.repo,
         match selector {
@@ -80,7 +133,7 @@ async fn download_repo_archive(
     let temp_dir = TempDir::new()?;
     extract_tar_gz_archive(&bytes, temp_dir.path())?;
     let archive_root = locate_archive_root(temp_dir.path())?;
-    Ok((temp_dir, archive_root))
+    Ok((release, asset_url, temp_dir, archive_root))
 }
 
 fn format_missing_asset_error(
