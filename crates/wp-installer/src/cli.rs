@@ -2,7 +2,11 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "wp-inst", about = "Bootstrap installer for wp-* binaries")]
+#[command(
+    name = "wp-inst",
+    about = "Bootstrap installer for wp-* binaries",
+    version
+)]
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
