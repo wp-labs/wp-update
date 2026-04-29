@@ -41,7 +41,7 @@ pub(crate) enum ArtifactKind {
     Skill,
 }
 
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, Default)]
 pub(crate) struct CommonArgs {
     #[command(flatten)]
     pub(crate) kind: KindArgs,
@@ -66,23 +66,6 @@ pub(crate) struct CommonArgs {
     pub(crate) updates_base_url: Option<String>,
     #[arg(long = "local-root", hide = true)]
     pub(crate) updates_root: Option<PathBuf>,
-}
-
-impl Default for CommonArgs {
-    fn default() -> Self {
-        Self {
-            kind: KindArgs::default(),
-            github: None,
-            source: None,
-            tag: None,
-            channel: None,
-            json: false,
-            skill_path: None,
-            latest: false,
-            updates_base_url: None,
-            updates_root: None,
-        }
-    }
 }
 
 impl CommonArgs {
