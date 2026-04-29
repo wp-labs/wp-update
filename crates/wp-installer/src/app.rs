@@ -297,7 +297,14 @@ mod tests {
         assert!(!err.source_frames().is_empty());
         assert!(err
             .root_cause_frame()
-            .map(|frame| frame.message.contains("invalid request"))
+            .map(|frame| {
+                frame.is_root_cause
+                    && frame
+                        .type_name
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("wp_self_update::error::UpdateReason")
+            })
             .unwrap_or(false));
     }
 
@@ -318,7 +325,14 @@ mod tests {
         assert!(!err.source_frames().is_empty());
         assert!(err
             .root_cause_frame()
-            .map(|frame| frame.message.contains("invalid request"))
+            .map(|frame| {
+                frame.is_root_cause
+                    && frame
+                        .type_name
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("wp_self_update::error::UpdateReason")
+            })
             .unwrap_or(false));
     }
 }
