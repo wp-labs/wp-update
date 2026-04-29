@@ -3,6 +3,8 @@ mod target;
 
 pub(crate) use source::SkillInstallArgs;
 
+use crate::error::{skill_install_failed, InstallerReason, InstallerResult};
+use orion_error::{ErrorWrapAs, IntoAs};
 use serde::Serialize;
 use source::{parse_skill_source, SkillSource};
 use std::fs;
@@ -39,21 +41,18 @@ pub(crate) struct SkillInstallReport {
     pub(crate) status: String,
 }
 
-pub(crate) async fn check_skill(
-    args: SkillInstallArgs,
-) -> Result<SkillCheckReport, Box<dyn std::error::Error>> {
+pub(crate) async fn check_skill(args: SkillInstallArgs) -> InstallerResult<SkillCheckReport> {
     let (source, selector) = parse_skill_source(&args)?;
     // Check validates that the requested path exists in the archive.
     let (release, archive, _archive_dir, archive_root) =
         download_repo_archive(&source, &selector).await?;
     let skill_src = archive_root.join(&source.subdir);
     if !skill_src.is_dir() {
-        return Err(format!(
+        return Err(skill_install_failed(format!(
             "skill not found: {} (expected {})",
             source.skill_name,
             skill_src.display()
-        )
-        .into());
+        )));
     }
 
     Ok(SkillCheckReport {
@@ -66,21 +65,18 @@ pub(crate) async fn check_skill(
     })
 }
 
-pub(crate) async fn install_skill(
-    args: SkillInstallArgs,
-) -> Result<SkillInstallReport, Box<dyn std::error::Error>> {
+pub(crate) async fn install_skill(args: SkillInstallArgs) -> InstallerResult<SkillInstallReport> {
     let (source, selector) = parse_skill_source(&args)?;
     let target_dirs = resolve_default_target_dirs()?;
     let (release, archive, _archive_dir, archive_root) =
         download_repo_archive(&source, &selector).await?;
     let skill_src = archive_root.join(&source.subdir);
     if !skill_src.is_dir() {
-        return Err(format!(
+        return Err(skill_install_failed(format!(
             "skill not found: {} (expected {})",
             source.skill_name,
             skill_src.display()
-        )
-        .into());
+        )));
     }
 
     let mut installs = Vec::new();
@@ -111,8 +107,7 @@ pub(crate) async fn install_skill(
 async fn download_repo_archive(
     source: &SkillSource,
     selector: &source::SkillReleaseSelector,
-) -> Result<(wp_self_update::GithubReleaseInfo, String, TempDir, PathBuf), Box<dyn std::error::Error>>
-{
+) -> InstallerResult<(wp_self_update::GithubReleaseInfo, String, TempDir, PathBuf)> {
     let release = load_github_release_info(
         &source.repo,
         match selector {
@@ -120,18 +115,37 @@ async fn download_repo_archive(
             source::SkillReleaseSelector::Tag(tag) => Some(tag.as_str()),
         },
     )
-    .await?;
+    .await
+    .wrap_as(
+        InstallerReason::SelfUpdateFailed,
+        "failed to load GitHub release metadata for skill archive",
+    )?;
     let expected_asset_name = format!("{}-{}.tar.gz", source.repo.name, release.tag_name);
     let asset_url = release
         .assets
         .iter()
         .find(|asset| asset.name == expected_asset_name)
         .map(|asset| asset.browser_download_url.clone())
-        .ok_or_else(|| format_missing_asset_error(source, &expected_asset_name, &release))?;
+        .ok_or_else(|| {
+            skill_install_failed(format_missing_asset_error(
+                source,
+                &expected_asset_name,
+                &release,
+            ))
+        })?;
 
-    let bytes = download_asset_bytes(&asset_url).await?;
-    let temp_dir = TempDir::new()?;
-    extract_tar_gz_archive(&bytes, temp_dir.path())?;
+    let bytes = download_asset_bytes(&asset_url).await.wrap_as(
+        InstallerReason::SelfUpdateFailed,
+        "failed to download skill archive",
+    )?;
+    let temp_dir = TempDir::new().into_as(
+        InstallerReason::SkillInstallFailed,
+        "failed to create temp skill dir",
+    )?;
+    extract_tar_gz_archive(&bytes, temp_dir.path()).wrap_as(
+        InstallerReason::SelfUpdateFailed,
+        "failed to extract downloaded skill archive",
+    )?;
     let archive_root = locate_archive_root(temp_dir.path())?;
     Ok((release, asset_url, temp_dir, archive_root))
 }
@@ -155,14 +169,18 @@ fn format_missing_asset_error(
     )
 }
 
-fn locate_archive_root(dest: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let entries = fs::read_dir(dest)?
+fn locate_archive_root(dest: &Path) -> InstallerResult<PathBuf> {
+    let entries = fs::read_dir(dest)
+        .into_as(
+            InstallerReason::SkillInstallFailed,
+            format!("failed to read extracted archive root {}", dest.display()),
+        )?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .collect::<Vec<PathBuf>>();
 
     if entries.is_empty() {
-        return Err("downloaded skill archive was empty".into());
+        return Err(skill_install_failed("downloaded skill archive was empty"));
     }
     if entries.len() == 1 && entries[0].is_dir() {
         return Ok(entries[0].clone());

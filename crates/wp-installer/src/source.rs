@@ -1,4 +1,5 @@
 use crate::cli::{Channel, CheckArgs, CommonArgs, InstallArgs};
+use crate::error::{invalid_request, InstallerResult};
 use std::env;
 use std::path::PathBuf;
 use wp_self_update::{GithubRepo, SourceConfig, SourceKind, UpdateChannel, UpdateTarget};
@@ -19,25 +20,25 @@ enum ManifestSourceRef {
     LocalRoot(PathBuf),
 }
 
-pub(crate) fn resolve_source_config(
-    args: &CommonArgs,
-) -> Result<SourceConfig, Box<dyn std::error::Error>> {
+pub(crate) fn resolve_source_config(args: &CommonArgs) -> InstallerResult<SourceConfig> {
     if args.github.is_some() {
         if args.source.is_some() || args.updates_base_url.is_some() || args.updates_root.is_some() {
-            return Err(
-                "--github cannot be combined with --source, --base-url, or --local-root".into(),
-            );
+            return Err(invalid_request(
+                "--github cannot be combined with --source, --base-url, or --local-root",
+            ));
         }
         if args.effective_channel() != Channel::Stable {
-            return Err("--github release selection does not support --channel; omit it".into());
+            return Err(invalid_request(
+                "--github release selection does not support --channel; omit it",
+            ));
         }
 
         let repo = GithubRepo::parse(
             args.github
                 .as_deref()
-                .ok_or_else(|| "missing GitHub repository".to_string())?,
+                .ok_or_else(|| invalid_request("missing GitHub repository"))?,
         )
-        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        .map_err(|e| invalid_request(format!("invalid GitHub repository: {}", e)))?;
 
         return Ok(SourceConfig {
             channel: UpdateChannel::Stable,
@@ -49,7 +50,7 @@ pub(crate) fn resolve_source_config(
     }
 
     if args.tag.is_some() || args.latest {
-        return Err("--tag requires --github <repo>".into());
+        return Err(invalid_request("--tag requires --github <repo>"));
     }
 
     let defaults = default_source_overrides();
@@ -77,11 +78,10 @@ pub(crate) fn resolve_source_config(
         .or(defaults.updates_base_url);
 
     if updates_root.is_none() && updates_base_url.is_none() {
-        return Err(format!(
+        return Err(invalid_request(format!(
             "manifest source is required: provide --source, --base-url, --local-root, or set {} / {}",
             DEFAULT_MANIFEST_BASE_URL_ENV, DEFAULT_MANIFEST_ROOT_ENV
-        )
-        .into());
+        )));
     }
 
     Ok(SourceConfig {
@@ -135,10 +135,10 @@ pub(crate) fn source_branch_name(args: &CommonArgs) -> String {
     "installer".to_string()
 }
 
-fn parse_manifest_source_ref(raw: &str) -> Result<ManifestSourceRef, Box<dyn std::error::Error>> {
+fn parse_manifest_source_ref(raw: &str) -> InstallerResult<ManifestSourceRef> {
     let value = raw.trim();
     if value.is_empty() {
-        return Err("--source cannot be empty".into());
+        return Err(invalid_request("--source cannot be empty"));
     }
     if value.starts_with("https://") || value.starts_with("http://") {
         return Ok(ManifestSourceRef::BaseUrl(value.to_string()));
