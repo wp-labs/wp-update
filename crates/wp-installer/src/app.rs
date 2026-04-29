@@ -1,4 +1,3 @@
-use clap::Parser;
 use orion_error::ErrorWrapAs;
 use wp_self_update::{check, update, CheckRequest, UpdateRequest};
 
@@ -13,8 +12,7 @@ use crate::source::{
     product_label_for_source, resolve_source_config, source_branch_name,
 };
 
-pub(crate) async fn run() -> InstallerResult<()> {
-    let cli = Cli::parse();
+pub(crate) async fn run_with_cli(cli: Cli) -> InstallerResult<()> {
     match cli.command {
         Some(Command::Check(args)) => run_check(args).await?,
         Some(Command::Install(args)) => run_install(args).await?,
@@ -157,6 +155,8 @@ fn validate_skill_install_args(args: &InstallArgs) -> InstallerResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::InstallerReason;
+    use orion_error::ErrorIdentityProvider;
 
     #[test]
     fn direct_skill_requires_path() {
@@ -263,5 +263,62 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("--channel"));
+    }
+
+    #[test]
+    fn invalid_request_exposes_stable_identity() {
+        let err = validate_bin_common_args(&CommonArgs {
+            skill_path: Some("skills/warpparse-log-engineering".to_string()),
+            ..CommonArgs::default()
+        })
+        .unwrap_err();
+
+        assert_eq!(err.reason(), &InstallerReason::InvalidRequest);
+        assert_eq!(err.reason().stable_code(), "conf.installer_invalid_request");
+    }
+
+    #[tokio::test]
+    async fn binary_check_wraps_self_update_error_with_source_chain() {
+        let err = run_check(CheckArgs {
+            common: CommonArgs {
+                github: Some("wp-labs/wpl-check".to_string()),
+                ..CommonArgs::default()
+            },
+            current_version: Some("not-semver".to_string()),
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(err.reason(), &InstallerReason::SelfUpdateFailed);
+        assert_eq!(
+            err.reason().stable_code(),
+            "sys.installer_self_update_failed"
+        );
+        assert!(!err.source_frames().is_empty());
+        assert!(err
+            .root_cause_frame()
+            .map(|frame| frame.message.contains("invalid request"))
+            .unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn binary_install_wraps_self_update_error_with_source_chain() {
+        let err = run_install(InstallArgs {
+            common: CommonArgs {
+                github: Some("wp-labs/wpl-check".to_string()),
+                ..CommonArgs::default()
+            },
+            current_version: Some("not-semver".to_string()),
+            ..InstallArgs::default()
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(err.reason(), &InstallerReason::SelfUpdateFailed);
+        assert!(!err.source_frames().is_empty());
+        assert!(err
+            .root_cause_frame()
+            .map(|frame| frame.message.contains("invalid request"))
+            .unwrap_or(false));
     }
 }

@@ -25,3 +25,27 @@ pub(crate) fn invalid_request(detail: impl Into<String>) -> InstallerError {
 pub(crate) fn skill_install_failed(detail: impl Into<String>) -> InstallerError {
     StructError::from(InstallerReason::SkillInstallFailed).with_detail(detail)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orion_error::DefaultExposurePolicy;
+
+    #[test]
+    fn installer_error_projects_to_cli_json() {
+        let json = invalid_request("bad cli args")
+            .exposure_snapshot(&DefaultExposurePolicy)
+            .to_cli_error_json()
+            .expect("cli json");
+
+        assert_eq!(
+            json["code"],
+            serde_json::json!("conf.installer_invalid_request")
+        );
+        assert_eq!(json["category"], serde_json::json!("conf"));
+        assert!(json["summary"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("bad cli args"));
+    }
+}
