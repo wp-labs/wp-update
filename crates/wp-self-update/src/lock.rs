@@ -1,19 +1,18 @@
-use orion_error::{ToStructError, UvsFrom};
+use crate::error::{install_failed, state_conflict, UpdateResult};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use wp_error::run_error::{RunReason, RunResult};
 
 pub(crate) struct UpdateLock {
     path: PathBuf,
 }
 
 impl UpdateLock {
-    pub(crate) fn acquire(install_dir: &Path) -> RunResult<Self> {
+    pub(crate) fn acquire(install_dir: &Path) -> UpdateResult<Self> {
         let path = install_dir.join(".warp_parse-update").join("lock");
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| {
-                RunReason::from_conf().to_err().with_detail(format!(
+                install_failed(format!(
                     "failed to create update lock dir {}: {}",
                     parent.display(),
                     e
@@ -26,11 +25,12 @@ impl UpdateLock {
             .create_new(true)
             .open(&path)
             .map_err(|e| {
-                RunReason::from_conf().to_err().with_detail(format!(
-                    "failed to acquire update lock {}: {}",
-                    path.display(),
-                    e
-                ))
+                let detail = format!("failed to acquire update lock {}: {}", path.display(), e);
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    state_conflict(detail)
+                } else {
+                    install_failed(detail)
+                }
             })?;
         let _ = writeln!(file, "pid={}", std::process::id());
         Ok(Self { path })
@@ -43,7 +43,7 @@ impl Drop for UpdateLock {
     }
 }
 
-fn clear_stale_lock_if_present(path: &Path) -> RunResult<()> {
+fn clear_stale_lock_if_present(path: &Path) -> UpdateResult<()> {
     if !path.exists() {
         return Ok(());
     }
@@ -55,7 +55,7 @@ fn clear_stale_lock_if_present(path: &Path) -> RunResult<()> {
     }
 
     fs::remove_file(path).map_err(|e| {
-        RunReason::from_conf().to_err().with_detail(format!(
+        state_conflict(format!(
             "failed to clear stale update lock {}: {}",
             path.display(),
             e

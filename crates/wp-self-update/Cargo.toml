@@ -11,6 +11,7 @@ keywords = ["self-update", "release", "installer", "cli"]
 categories = ["development-tools", "command-line-utilities"]
 
 [dependencies]
+derive_more = { version = "2.1", features = ["from"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 semver = "1.0"
@@ -18,14 +19,13 @@ flate2 = "1.1"
 hex = "0.4"
 indicatif = "0.18"
 libc = "0.2"
-orion-error = "0.6"
+orion-error = "0.7"
 reqwest = "0.13.2"
 sha2 = "0.10"
 tar = "0.4"
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "time"] }
 uuid = { version = "1.19", features = ["v4"] }
 walkdir = "2.5"
-wp-error = "0.8"
 
 [dev-dependencies]
 flate2 = "1.1"

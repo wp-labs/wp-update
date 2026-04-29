@@ -1,12 +1,11 @@
+use crate::error::{remote_fetch_failed, UpdateResult};
 use crate::{
     parse_v2_release, updates_manifest_path, updates_manifest_url, GithubReleaseAssetInfo,
     GithubReleaseInfo, GithubRepo, ResolvedRelease, SourceConfig, SourceKind, UpdateChannel,
 };
-use orion_error::{ToStructError, UvsFrom};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use std::time::Duration;
-use wp_error::run_error::{RunReason, RunResult};
 
 const FETCH_CONNECT_TIMEOUT_SECS: u64 = 5;
 const FETCH_REQUEST_TIMEOUT_SECS: u64 = 10;
@@ -15,16 +14,12 @@ const FETCH_RETRY_MAX_ATTEMPTS: usize = 3;
 pub(crate) async fn load_release(
     source: &SourceConfig,
     channel: UpdateChannel,
-) -> RunResult<(ResolvedRelease, String)> {
+) -> UpdateResult<(ResolvedRelease, String)> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(FETCH_CONNECT_TIMEOUT_SECS))
         .timeout(Duration::from_secs(FETCH_REQUEST_TIMEOUT_SECS))
         .build()
-        .map_err(|e| {
-            RunReason::from_conf()
-                .to_err()
-                .with_detail(format!("failed to build HTTP client: {}", e))
-        })?;
+        .map_err(|e| remote_fetch_failed(format!("failed to build HTTP client: {}", e)))?;
 
     match &source.kind {
         SourceKind::Manifest {
@@ -34,7 +29,7 @@ pub(crate) async fn load_release(
             if let Some(root) = updates_root.as_deref() {
                 let path = updates_manifest_path(root, channel);
                 let raw = std::fs::read_to_string(&path).map_err(|e| {
-                    RunReason::from_conf().to_err().with_detail(format!(
+                    remote_fetch_failed(format!(
                         "failed to read manifest {}: {}",
                         path.display(),
                         e
@@ -77,7 +72,7 @@ struct GithubReleaseAsset {
     digest: Option<String>,
 }
 
-async fn fetch_github_release_text(client: &reqwest::Client, url: &str) -> RunResult<String> {
+async fn fetch_github_release_text(client: &reqwest::Client, url: &str) -> UpdateResult<String> {
     let request = client
         .get(url)
         .header("accept", "application/vnd.github+json")
@@ -89,16 +84,12 @@ async fn fetch_github_release_text(client: &reqwest::Client, url: &str) -> RunRe
 pub async fn load_github_release_info(
     repo: &GithubRepo,
     tag: Option<&str>,
-) -> RunResult<GithubReleaseInfo> {
+) -> UpdateResult<GithubReleaseInfo> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(FETCH_CONNECT_TIMEOUT_SECS))
         .timeout(Duration::from_secs(FETCH_REQUEST_TIMEOUT_SECS))
         .build()
-        .map_err(|e| {
-            RunReason::from_conf()
-                .to_err()
-                .with_detail(format!("failed to build HTTP client: {}", e))
-        })?;
+        .map_err(|e| remote_fetch_failed(format!("failed to build HTTP client: {}", e)))?;
 
     let url = match tag {
         Some(tag) => repo.tag_release_api_url(tag),
@@ -112,7 +103,7 @@ async fn fetch_text(
     client: &reqwest::Client,
     url: &str,
     not_found_is_terminal: bool,
-) -> RunResult<String> {
+) -> UpdateResult<String> {
     fetch_text_from_request(client.get(url), url, not_found_is_terminal).await
 }
 
@@ -120,36 +111,34 @@ async fn fetch_text_from_request(
     request: reqwest::RequestBuilder,
     url: &str,
     not_found_is_terminal: bool,
-) -> RunResult<String> {
+) -> UpdateResult<String> {
     let mut last_error: Option<String> = None;
     for attempt in 1..=FETCH_RETRY_MAX_ATTEMPTS {
         let Some(request) = request.try_clone() else {
-            return Err(RunReason::from_conf()
-                .to_err()
-                .with_detail(format!("failed to clone HTTP request for {}", url)));
+            return Err(remote_fetch_failed(format!(
+                "failed to clone HTTP request for {}",
+                url
+            )));
         };
         match request.send().await {
             Ok(rsp) => {
                 let status = rsp.status();
                 if status.is_success() {
                     return rsp.text().await.map_err(|e| {
-                        RunReason::from_conf()
-                            .to_err()
-                            .with_detail(format!("failed to read response {}: {}", url, e))
+                        remote_fetch_failed(format!("failed to read response {}: {}", url, e))
                     });
                 }
                 if not_found_is_terminal && status == StatusCode::NOT_FOUND {
-                    return Err(RunReason::from_conf()
-                        .to_err()
-                        .with_detail(format!("manifest not found: {}", url)));
+                    return Err(remote_fetch_failed(format!("manifest not found: {}", url)));
                 }
                 if is_retryable_status(status) && attempt < FETCH_RETRY_MAX_ATTEMPTS {
                     tokio::time::sleep(Duration::from_millis(200 * attempt as u64)).await;
                     continue;
                 }
-                return Err(RunReason::from_conf()
-                    .to_err()
-                    .with_detail(format!("request failed {}: HTTP {}", url, status)));
+                return Err(remote_fetch_failed(format!(
+                    "request failed {}: HTTP {}",
+                    url, status
+                )));
             }
             Err(e) => {
                 last_error = Some(e.to_string());
@@ -160,7 +149,7 @@ async fn fetch_text_from_request(
             }
         }
     }
-    Err(RunReason::from_conf().to_err().with_detail(format!(
+    Err(remote_fetch_failed(format!(
         "failed to fetch manifest {} after {} attempts: {}",
         url,
         FETCH_RETRY_MAX_ATTEMPTS,
@@ -168,11 +157,13 @@ async fn fetch_text_from_request(
     )))
 }
 
-fn parse_github_release(raw: &str, repo: &GithubRepo, source: &str) -> RunResult<ResolvedRelease> {
+fn parse_github_release(
+    raw: &str,
+    repo: &GithubRepo,
+    source: &str,
+) -> UpdateResult<ResolvedRelease> {
     let release = serde_json::from_str::<GithubLatestRelease>(raw).map_err(|e| {
-        RunReason::from_conf()
-            .to_err()
-            .with_detail(format!("invalid GitHub release JSON {}: {}", source, e))
+        remote_fetch_failed(format!("invalid GitHub release JSON {}: {}", source, e))
     })?;
 
     let target = crate::platform::detect_target_triple_v2()?;
@@ -183,7 +174,7 @@ fn parse_github_release(raw: &str, repo: &GithubRepo, source: &str) -> RunResult
             .map(|asset| asset.name.as_str())
             .collect();
         names.sort_unstable();
-        RunReason::from_conf().to_err().with_detail(format!(
+        remote_fetch_failed(format!(
             "GitHub release missing asset for target '{}': {} (available: {})",
             target,
             repo.url,
@@ -192,7 +183,7 @@ fn parse_github_release(raw: &str, repo: &GithubRepo, source: &str) -> RunResult
     })?;
 
     let digest = asset.digest.as_deref().ok_or_else(|| {
-        RunReason::from_conf().to_err().with_detail(format!(
+        remote_fetch_failed(format!(
             "GitHub release asset '{}' is missing sha256 digest metadata: {}",
             asset.name, repo.url
         ))
@@ -207,11 +198,9 @@ fn parse_github_release(raw: &str, repo: &GithubRepo, source: &str) -> RunResult
     })
 }
 
-fn parse_github_release_info(raw: &str, source: &str) -> RunResult<GithubReleaseInfo> {
+fn parse_github_release_info(raw: &str, source: &str) -> UpdateResult<GithubReleaseInfo> {
     let release = serde_json::from_str::<GithubLatestRelease>(raw).map_err(|e| {
-        RunReason::from_conf()
-            .to_err()
-            .with_detail(format!("invalid GitHub release JSON {}: {}", source, e))
+        remote_fetch_failed(format!("invalid GitHub release JSON {}: {}", source, e))
     })?;
 
     Ok(GithubReleaseInfo {
@@ -253,9 +242,9 @@ fn select_github_release_asset<'a>(
     exact_raw.or(raw).or(archive)
 }
 
-fn parse_github_asset_digest(raw: &str, asset_name: &str, source: &str) -> RunResult<String> {
+fn parse_github_asset_digest(raw: &str, asset_name: &str, source: &str) -> UpdateResult<String> {
     let Some(value) = raw.strip_prefix("sha256:") else {
-        return Err(RunReason::from_conf().to_err().with_detail(format!(
+        return Err(remote_fetch_failed(format!(
             "unsupported GitHub asset digest '{}' for {} ({})",
             raw, asset_name, source
         )));
@@ -266,7 +255,7 @@ fn parse_github_asset_digest(raw: &str, asset_name: &str, source: &str) -> RunRe
     if is_hex_64 {
         return Ok(normalized);
     }
-    Err(RunReason::from_conf().to_err().with_detail(format!(
+    Err(remote_fetch_failed(format!(
         "invalid GitHub asset sha256 '{}' for {} ({})",
         raw, asset_name, source
     )))

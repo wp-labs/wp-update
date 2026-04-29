@@ -1,15 +1,11 @@
+use crate::error::{integrity_check_failed, invalid_request, UpdateResult};
 use crate::types::VersionRelation;
-use orion_error::{ToStructError, UvsFrom};
 use semver::Version;
-use wp_error::run_error::{RunReason, RunResult};
 
-pub(crate) fn parse_version(raw: &str) -> RunResult<Version> {
+pub(crate) fn parse_version(raw: &str) -> UpdateResult<Version> {
     let normalized = raw.trim().trim_start_matches('v');
-    Version::parse(normalized).map_err(|e| {
-        RunReason::from_conf()
-            .to_err()
-            .with_detail(format!("invalid semver '{}': {}", raw, e))
-    })
+    Version::parse(normalized)
+        .map_err(|e| invalid_request(format!("invalid semver '{}': {}", raw, e)))
 }
 
 pub(crate) fn compare_versions(current: &Version, latest: &Version) -> VersionRelation {
@@ -22,17 +18,17 @@ pub(crate) fn compare_versions(current: &Version, latest: &Version) -> VersionRe
     VersionRelation::AheadOfChannel
 }
 
-pub fn compare_versions_str(current: &str, latest: &str) -> RunResult<VersionRelation> {
+pub fn compare_versions_str(current: &str, latest: &str) -> UpdateResult<VersionRelation> {
     let current_version = parse_version(current)?;
     let latest_version = parse_version(latest)?;
     Ok(compare_versions(&current_version, &latest_version))
 }
 
-pub fn validate_artifact_version_consistency(version: &str, artifact: &str) -> RunResult<()> {
+pub fn validate_artifact_version_consistency(version: &str, artifact: &str) -> UpdateResult<()> {
     if artifact.contains(version) {
         return Ok(());
     }
-    Err(RunReason::from_conf().to_err().with_detail(format!(
+    Err(integrity_check_failed(format!(
         "artifact/version mismatch: artifact '{}' does not contain version '{}'",
         artifact, version
     )))
