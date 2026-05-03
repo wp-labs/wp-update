@@ -1,3 +1,4 @@
+use crate::error::{invalid_request, InstallerResult};
 use std::path::{Component, Path, PathBuf};
 use wp_self_update::GithubRepo;
 
@@ -24,14 +25,18 @@ pub(super) enum SkillReleaseSelector {
 
 pub(super) fn parse_skill_source(
     args: &SkillInstallArgs,
-) -> Result<(SkillSource, SkillReleaseSelector), Box<dyn std::error::Error>> {
-    let repo = GithubRepo::parse(&args.github)
-        .map_err(|err| format!("invalid GitHub repository '{}': {}", args.github, err))?;
+) -> InstallerResult<(SkillSource, SkillReleaseSelector)> {
+    let repo = GithubRepo::parse(&args.github).map_err(|err| {
+        invalid_request(format!(
+            "invalid GitHub repository '{}': {}",
+            args.github, err
+        ))
+    })?;
     let subdir = normalize_skill_path(&args.path)?;
     let skill_name = subdir
         .file_name()
         .and_then(|value| value.to_str())
-        .ok_or_else(|| format!("invalid skill path '{}'", args.path))?
+        .ok_or_else(|| invalid_request(format!("invalid skill path '{}'", args.path)))?
         .to_string();
     let selector = if args.latest {
         SkillReleaseSelector::Latest
@@ -52,21 +57,27 @@ pub(super) fn parse_skill_source(
     ))
 }
 
-fn normalize_skill_path(raw: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn normalize_skill_path(raw: &str) -> InstallerResult<PathBuf> {
     let value = raw.trim().trim_matches('/');
     if value.is_empty() {
-        return Err("skill path cannot be empty".into());
+        return Err(invalid_request("skill path cannot be empty"));
     }
 
     let path = Path::new(value);
     if path.is_absolute() {
-        return Err(format!("skill path must be relative: {}", raw).into());
+        return Err(invalid_request(format!(
+            "skill path must be relative: {}",
+            raw
+        )));
     }
     if path
         .components()
         .any(|component| matches!(component, Component::ParentDir))
     {
-        return Err(format!("skill path cannot contain '..': {}", raw).into());
+        return Err(invalid_request(format!(
+            "skill path cannot contain '..': {}",
+            raw
+        )));
     }
     Ok(path.to_path_buf())
 }

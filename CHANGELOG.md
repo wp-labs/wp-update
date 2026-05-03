@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Changed
+- Upgraded `orion-error` from 0.7 to 0.8 across `wp-inst` and `wp-self-update`.
+  - Replaced `ErrorWrapAs`/`IntoAs` traits with unified `SourceErr` / `.source_err()`.
+  - Replaced `StructError::from(reason).with_detail(...)` with `reason.to_err().with_detail(...)`.
+  - Replaced `.source_std(e)` with `.source(e)` on builder API.
+  - Replaced `UvsReason` with `UnifiedReason` (type alias no longer re-exported from crate root).
+  - Moved `DefaultExposurePolicy` to `protocol::DefaultExposurePolicy` and `ErrorIdentityProvider` to `reason::ErrorIdentityProvider`.
+  - Renamed `.exposure_snapshot()` to `.exposure()`.
+
+## [0.2.0] - 2026-04-29
+
+### Added
+- Added structured installer error semantics tests covering stable identities, self-update wrap boundaries, and preserved source frames.
+- Added machine-consumable CLI error JSON output for `wp-inst --json` failure paths via `orion-error` CLI projections.
+
+### Changed
+- Replaced `wp-self-update`'s dependency on `wp-error` with a dedicated `UpdateReason` / `UpdateError` model built on `orion-error 0.7`.
+- Replaced `wp-inst` internal `Box<dyn std::error::Error>` flows with a dedicated `InstallerReason` / `InstallerError` model built on `orion-error 0.7`.
+- Wrapped `wp-self-update` failures at the installer boundary so `wp-inst` reports installer-level semantics while preserving lower-layer structured sources.
+
 ## [0.1.9] - 2026-03-25
 
 ### Added

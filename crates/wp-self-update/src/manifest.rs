@@ -1,10 +1,11 @@
-use crate::platform::detect_target_triple_v2;
 use crate::types::{ResolvedRelease, UpdateChannel};
-use orion_error::{ToStructError, UvsFrom};
+use crate::{
+    error::{integrity_check_failed, invalid_request, UpdateResult},
+    platform::detect_target_triple_v2,
+};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use wp_error::run_error::{RunReason, RunResult};
 
 #[derive(Debug, Deserialize)]
 struct UpdateManifestV2 {
@@ -32,15 +33,12 @@ pub fn parse_v2_release(
     raw: &str,
     source: &str,
     expected_channel: UpdateChannel,
-) -> RunResult<ResolvedRelease> {
-    let manifest = serde_json::from_str::<UpdateManifestV2>(raw).map_err(|e| {
-        RunReason::from_conf()
-            .to_err()
-            .with_detail(format!("invalid v2 manifest JSON {}: {}", source, e))
-    })?;
+) -> UpdateResult<ResolvedRelease> {
+    let manifest = serde_json::from_str::<UpdateManifestV2>(raw)
+        .map_err(|e| invalid_request(format!("invalid v2 manifest JSON {}: {}", source, e)))?;
 
     if manifest.channel != expected_channel.as_str() {
-        return Err(RunReason::from_conf().to_err().with_detail(format!(
+        return Err(invalid_request(format!(
             "manifest channel mismatch: expected '{}', got '{}' ({})",
             expected_channel.as_str(),
             manifest.channel,
@@ -52,7 +50,7 @@ pub fn parse_v2_release(
     let asset = manifest.assets.get(target).ok_or_else(|| {
         let mut keys: Vec<&str> = manifest.assets.keys().map(|k| k.as_str()).collect();
         keys.sort_unstable();
-        RunReason::from_conf().to_err().with_detail(format!(
+        invalid_request(format!(
             "manifest missing asset for target '{}': {} (available: {})",
             target,
             source,
@@ -68,13 +66,13 @@ pub fn parse_v2_release(
     })
 }
 
-fn validate_sha256_hex(raw: &str, source: &str, target: &str) -> RunResult<String> {
+fn validate_sha256_hex(raw: &str, source: &str, target: &str) -> UpdateResult<String> {
     let value = raw.trim().to_ascii_lowercase();
     let is_hex_64 = value.len() == 64 && value.chars().all(|c| c.is_ascii_hexdigit());
     if is_hex_64 {
         return Ok(value);
     }
-    Err(RunReason::from_conf().to_err().with_detail(format!(
+    Err(integrity_check_failed(format!(
         "invalid sha256 for target '{}' in {}: expected 64 hex chars, got '{}'",
         target, source, raw
     )))

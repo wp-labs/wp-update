@@ -1,13 +1,19 @@
+use crate::error::{InstallerReason, InstallerResult};
 use crate::skills::{SkillCheckReport, SkillInstallReport};
 use crate::source::CUSTOM_PRODUCT_LABEL;
 use wp_self_update::{CheckReport, UpdateReport};
 
-pub(crate) fn print_check_report(
-    json: bool,
-    report: &CheckReport,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn print_check_report(json: bool, report: &CheckReport) -> InstallerResult<()> {
     if json {
-        println!("{}", serde_json::to_string_pretty(report)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report).map_err(|e| {
+                orion_error::StructError::builder(InstallerReason::OutputFailed)
+                    .detail("failed to serialize check report")
+                    .source_std(e)
+                    .finish()
+            })?
+        );
         return Ok(());
     }
     println!("{} check", display_product_label(&report.product));
@@ -31,9 +37,17 @@ pub(crate) fn print_update_report(
     action: &str,
     json: bool,
     report: &UpdateReport,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> InstallerResult<()> {
     if json {
-        println!("{}", serde_json::to_string_pretty(report)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report).map_err(|e| {
+                orion_error::StructError::builder(InstallerReason::OutputFailed)
+                    .detail("failed to serialize update report")
+                    .source_std(e)
+                    .finish()
+            })?
+        );
         return Ok(());
     }
     println!("{} {}", display_product_label(&report.product), action);
@@ -49,9 +63,17 @@ pub(crate) fn print_update_report(
 pub(crate) fn print_skill_check_report(
     json: bool,
     report: &SkillCheckReport,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> InstallerResult<()> {
     if json {
-        println!("{}", serde_json::to_string_pretty(report)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report).map_err(|e| {
+                orion_error::StructError::builder(InstallerReason::OutputFailed)
+                    .detail("failed to serialize skill check report")
+                    .source_std(e)
+                    .finish()
+            })?
+        );
         return Ok(());
     }
     println!("{} check", report.skill);
@@ -66,9 +88,17 @@ pub(crate) fn print_skill_check_report(
 pub(crate) fn print_skill_install_report(
     json: bool,
     report: &SkillInstallReport,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> InstallerResult<()> {
     if json {
-        println!("{}", serde_json::to_string_pretty(report)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report).map_err(|e| {
+                orion_error::StructError::builder(InstallerReason::OutputFailed)
+                    .detail("failed to serialize skill install report")
+                    .source_std(e)
+                    .finish()
+            })?
+        );
         return Ok(());
     }
     println!("Installed: {}", report.skill);

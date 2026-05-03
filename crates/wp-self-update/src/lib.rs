@@ -1,3 +1,4 @@
+mod error;
 mod fetch;
 mod install;
 mod lock;
@@ -6,8 +7,8 @@ mod platform;
 mod types;
 mod versioning;
 
+pub use error::{UpdateError, UpdateResult};
 pub use manifest::updates_manifest_url;
-use orion_error::{ToStructError, UvsFrom};
 pub use types::{
     CheckReport, CheckRequest, GithubReleaseAssetInfo, GithubReleaseInfo, GithubRepo,
     ResolvedRelease, SourceConfig, SourceKind, UpdateChannel, UpdateProduct, UpdateReport,
@@ -15,6 +16,7 @@ pub use types::{
 };
 pub use versioning::{compare_versions_str, relation_message};
 
+use error::{install_failed, invalid_request, state_conflict};
 use fetch::load_release;
 use install::{
     confirm_update, create_temp_update_dir, discover_extracted_bins, extract_artifact_archive,
@@ -24,9 +26,8 @@ use install::{
 };
 use lock::UpdateLock;
 use std::path::PathBuf;
-use wp_error::run_error::RunResult;
 
-pub async fn check(request: CheckRequest) -> RunResult<CheckReport> {
+pub async fn check(request: CheckRequest) -> UpdateResult<CheckReport> {
     let channel = request.source.channel;
     let channel_name = source_channel_name(&request.source).to_string();
     let manifest_format = source_format_name(&request.source).to_string();
@@ -49,7 +50,7 @@ pub async fn check(request: CheckRequest) -> RunResult<CheckReport> {
     })
 }
 
-pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
+pub async fn update(request: UpdateRequest) -> UpdateResult<UpdateReport> {
     let channel = request.source.channel;
     let channel_name = source_channel_name(&request.source).to_string();
     let (release, source) = load_release(&request.source, channel).await?;
@@ -76,12 +77,10 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
     }
 
     if is_probably_package_managed(&install_dir) && !request.force {
-        return Err(wp_error::run_error::RunReason::from_conf()
-            .to_err()
-            .with_detail(format!(
-                "refusing to replace binaries under {}; looks like a package-managed install, rerun with --force if this is intentional",
-                install_dir.display()
-            )));
+        return Err(state_conflict(format!(
+            "refusing to replace binaries under {}; looks like a package-managed install, rerun with --force if this is intentional",
+            install_dir.display()
+        )));
     }
 
     if request.dry_run {
@@ -134,7 +133,7 @@ pub async fn update(request: UpdateRequest) -> RunResult<UpdateReport> {
             rollback_bins(&install_dir, &backup_dir, &selected_bins)?;
             return Err(err);
         }
-        Ok::<PathBuf, wp_error::RunError>(backup_dir)
+        Ok::<PathBuf, UpdateError>(backup_dir)
     }
     .await;
 
@@ -174,7 +173,7 @@ fn prepare_install_payload(
     asset_bytes: &[u8],
     extract_root: &std::path::Path,
     target: &UpdateTarget,
-) -> RunResult<(std::collections::HashMap<String, PathBuf>, Vec<String>)> {
+) -> UpdateResult<(std::collections::HashMap<String, PathBuf>, Vec<String>)> {
     if is_gzip_artifact(asset_bytes) {
         extract_artifact_archive(asset_bytes, extract_root)?;
         return resolve_target_bins(extract_root, target);
@@ -185,38 +184,34 @@ fn prepare_install_payload(
     Ok((extracted, bins))
 }
 
-fn resolve_raw_binary_bins(target: &UpdateTarget) -> RunResult<Vec<String>> {
+fn resolve_raw_binary_bins(target: &UpdateTarget) -> UpdateResult<Vec<String>> {
     match target {
         UpdateTarget::Product(product) => {
             let bins = product.owned_bins();
             if bins.len() == 1 {
                 return Ok(bins);
             }
-            Err(wp_error::run_error::RunReason::from_conf()
-                .to_err()
-                .with_detail("raw binary artifacts require exactly one target binary".to_string()))
+            Err(invalid_request(
+                "raw binary artifacts require exactly one target binary",
+            ))
         }
         UpdateTarget::Bins(bins) => {
             if bins.len() == 1 {
                 return Ok(bins.clone());
             }
-            Err(wp_error::run_error::RunReason::from_conf()
-                .to_err()
-                .with_detail("raw binary artifacts require exactly one target binary".to_string()))
+            Err(invalid_request(
+                "raw binary artifacts require exactly one target binary",
+            ))
         }
         UpdateTarget::Auto => {
             let current_exe = std::env::current_exe().map_err(|e| {
-                wp_error::run_error::RunReason::from_conf()
-                    .to_err()
-                    .with_detail(format!("failed to resolve current executable path: {}", e))
+                install_failed(format!("failed to resolve current executable path: {}", e))
             })?;
             let Some(name) = current_exe.file_name().and_then(|value| value.to_str()) else {
-                return Err(wp_error::run_error::RunReason::from_conf()
-                    .to_err()
-                    .with_detail(format!(
-                        "failed to resolve executable name from {}",
-                        current_exe.display()
-                    )));
+                return Err(install_failed(format!(
+                    "failed to resolve executable name from {}",
+                    current_exe.display()
+                )));
             };
             Ok(vec![name.to_string()])
         }
@@ -226,7 +221,7 @@ fn resolve_raw_binary_bins(target: &UpdateTarget) -> RunResult<Vec<String>> {
 fn resolve_target_bins(
     extract_root: &std::path::Path,
     target: &UpdateTarget,
-) -> RunResult<(std::collections::HashMap<String, PathBuf>, Vec<String>)> {
+) -> UpdateResult<(std::collections::HashMap<String, PathBuf>, Vec<String>)> {
     match target {
         UpdateTarget::Product(product) => {
             let bins = product.owned_bins();
@@ -313,7 +308,7 @@ mod tests {
         }
     }
 
-    fn apply_artifact(install_dir: &Path, artifact: &[u8], version: &str) -> RunResult<PathBuf> {
+    fn apply_artifact(install_dir: &Path, artifact: &[u8], version: &str) -> UpdateResult<PathBuf> {
         let extract_root = create_temp_update_dir()?;
         let install_result = (|| {
             extract_artifact_archive(artifact, &extract_root)?;
@@ -426,7 +421,7 @@ mod tests {
                 rollback_bins(install_dir.path(), &backup_dir, &bins)?;
                 return Err(err);
             }
-            Ok::<PathBuf, wp_error::RunError>(backup_dir)
+            Ok::<PathBuf, UpdateError>(backup_dir)
         })();
         let _ = std::fs::remove_dir_all(&extract_root);
 

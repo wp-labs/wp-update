@@ -1,3 +1,5 @@
+use crate::error::{skill_install_failed, InstallerReason, InstallerResult};
+use orion_error::prelude::SourceErr;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,7 +14,7 @@ pub(super) struct InstalledSkill {
     pub(super) files: Vec<PathBuf>,
 }
 
-pub(super) fn resolve_default_target_dirs() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+pub(super) fn resolve_default_target_dirs() -> InstallerResult<Vec<PathBuf>> {
     let mut target_dirs = Vec::new();
 
     if env::var(SKILLS_PLATFORM_ENV).is_err() {
@@ -28,7 +30,15 @@ pub(super) fn resolve_default_target_dirs() -> Result<Vec<PathBuf>, Box<dyn std:
             target_dirs.push(claude);
         }
     } else {
-        match env::var(SKILLS_PLATFORM_ENV)?.as_str() {
+        match env::var(SKILLS_PLATFORM_ENV)
+            .map_err(|e| {
+                orion_error::StructError::builder(InstallerReason::SkillInstallFailed)
+                    .detail("failed to read WP_SKILLS_PLATFORM")
+                    .source(e)
+                    .finish()
+            })?
+            .as_str()
+        {
             "codex" => target_dirs.push(home_subdir(".codex/skills")?),
             "claude-code" => target_dirs.push(home_subdir(".claude/skills")?),
             "auto" => {
@@ -55,8 +65,14 @@ pub(super) fn install_skill_into_target(
     skill_name: &str,
     src_dir: &Path,
     target_base: &Path,
-) -> Result<InstalledSkill, Box<dyn std::error::Error>> {
-    fs::create_dir_all(target_base)?;
+) -> InstallerResult<InstalledSkill> {
+    fs::create_dir_all(target_base).source_err(
+        InstallerReason::SkillInstallFailed,
+        format!(
+            "failed to create skill target dir {}",
+            target_base.display()
+        ),
+    )?;
     let dst_dir = target_base.join(skill_name);
     let staged_dir = unique_work_path(target_base, &format!(".{skill_name}.staging"))?;
     copy_dir_recursive(src_dir, &staged_dir).map_err(|err| {
@@ -68,12 +84,12 @@ pub(super) fn install_skill_into_target(
         let backup_dir = unique_work_path(target_base, &format!(".{skill_name}.backup"))?;
         fs::rename(&dst_dir, &backup_dir).map_err(|e| {
             let _ = fs::remove_dir_all(&staged_dir);
-            format!(
+            skill_install_failed(format!(
                 "failed to move existing skill {} to backup {}: {}",
                 dst_dir.display(),
                 backup_dir.display(),
                 e
-            )
+            ))
         })?;
         Some(backup_dir)
     } else {
@@ -85,24 +101,22 @@ pub(super) fn install_skill_into_target(
         let _ = fs::remove_dir_all(&dst_dir);
         if let Some(backup_dir) = &backup_dir {
             if let Err(restore_err) = fs::rename(backup_dir, &dst_dir) {
-                return Err(format!(
+                return Err(skill_install_failed(format!(
                     "failed to activate skill {} at {}: {}; additionally failed to restore backup {}: {}",
                     skill_name,
                     dst_dir.display(),
                     err,
                     backup_dir.display(),
                     restore_err
-                )
-                .into());
+                )));
             }
         }
-        return Err(format!(
+        return Err(skill_install_failed(format!(
             "failed to activate skill {} at {}: {}",
             skill_name,
             dst_dir.display(),
             err
-        )
-        .into());
+        )));
     }
 
     if let Some(backup_dir) = backup_dir {
@@ -116,27 +130,54 @@ pub(super) fn install_skill_into_target(
     })
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
+fn copy_dir_recursive(src: &Path, dst: &Path) -> InstallerResult<()> {
+    fs::create_dir_all(dst).source_err(
+        InstallerReason::SkillInstallFailed,
+        format!("failed to create staged skill dir {}", dst.display()),
+    )?;
+    for entry in fs::read_dir(src).source_err(
+        InstallerReason::SkillInstallFailed,
+        format!("failed to read skill source dir {}", src.display()),
+    )? {
+        let entry = entry.source_err(
+            InstallerReason::SkillInstallFailed,
+            format!("failed to read entry under {}", src.display()),
+        )?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-        let file_type = entry.file_type()?;
+        let file_type = entry.file_type().source_err(
+            InstallerReason::SkillInstallFailed,
+            format!("failed to inspect {}", src_path.display()),
+        )?;
 
         if file_type.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
             continue;
         }
 
-        fs::copy(&src_path, &dst_path)?;
-        let permissions = fs::metadata(&src_path)?.permissions();
-        fs::set_permissions(&dst_path, permissions)?;
+        fs::copy(&src_path, &dst_path).source_err(
+            InstallerReason::SkillInstallFailed,
+            format!(
+                "failed to copy skill file {} to {}",
+                src_path.display(),
+                dst_path.display()
+            ),
+        )?;
+        let permissions = fs::metadata(&src_path)
+            .source_err(
+                InstallerReason::SkillInstallFailed,
+                format!("failed to read file metadata {}", src_path.display()),
+            )?
+            .permissions();
+        fs::set_permissions(&dst_path, permissions).source_err(
+            InstallerReason::SkillInstallFailed,
+            format!("failed to set permissions on {}", dst_path.display()),
+        )?;
     }
     Ok(())
 }
 
-fn list_relative_files(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+fn list_relative_files(root: &Path) -> InstallerResult<Vec<PathBuf>> {
     let mut files = Vec::new();
     collect_relative_files(root, root, &mut files)?;
     files.sort();
@@ -147,26 +188,54 @@ fn collect_relative_files(
     root: &Path,
     current: &Path,
     files: &mut Vec<PathBuf>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    for entry in fs::read_dir(current)? {
-        let entry = entry?;
+) -> InstallerResult<()> {
+    for entry in fs::read_dir(current).source_err(
+        InstallerReason::SkillInstallFailed,
+        format!("failed to read installed skill dir {}", current.display()),
+    )? {
+        let entry = entry.source_err(
+            InstallerReason::SkillInstallFailed,
+            format!("failed to read entry under {}", current.display()),
+        )?;
         let path = entry.path();
-        if entry.file_type()?.is_dir() {
+        if entry
+            .file_type()
+            .source_err(
+                InstallerReason::SkillInstallFailed,
+                format!("failed to inspect installed path {}", path.display()),
+            )?
+            .is_dir()
+        {
             collect_relative_files(root, &path, files)?;
             continue;
         }
-        files.push(path.strip_prefix(root)?.to_path_buf());
+        files.push(
+            path.strip_prefix(root)
+                .map_err(|e| {
+                    orion_error::StructError::builder(InstallerReason::SkillInstallFailed)
+                        .detail(format!(
+                            "failed to compute relative installed path {} from {}",
+                            path.display(),
+                            root.display()
+                        ))
+                        .source(e)
+                        .finish()
+                })?
+                .to_path_buf(),
+        );
     }
     Ok(())
 }
 
-fn unique_work_path(
-    target_base: &Path,
-    prefix: &str,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn unique_work_path(target_base: &Path, prefix: &str) -> InstallerResult<PathBuf> {
     let base_nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|e| format!("system clock error while creating work path: {}", e))?
+        .map_err(|e| {
+            orion_error::StructError::builder(InstallerReason::SkillInstallFailed)
+                .detail("system clock error while creating work path")
+                .source(e)
+                .finish()
+        })?
         .as_nanos();
     for attempt in 0..100u32 {
         let candidate = target_base.join(format!(
@@ -180,11 +249,10 @@ fn unique_work_path(
             return Ok(candidate);
         }
     }
-    Err(format!(
+    Err(skill_install_failed(format!(
         "failed to allocate a unique work path under {}",
         target_base.display()
-    )
-    .into())
+    )))
 }
 
 fn platform_name(target_base: &Path) -> String {
@@ -198,8 +266,13 @@ fn platform_name(target_base: &Path) -> String {
     }
 }
 
-fn home_subdir(suffix: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let home = env::var("HOME").map_err(|_| "HOME is not set")?;
+fn home_subdir(suffix: &str) -> InstallerResult<PathBuf> {
+    let home = env::var("HOME").map_err(|e| {
+        orion_error::StructError::builder(InstallerReason::SkillInstallFailed)
+            .detail("HOME is not set")
+            .source(e)
+            .finish()
+    })?;
     Ok(PathBuf::from(home).join(suffix))
 }
 

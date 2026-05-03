@@ -1,7 +1,8 @@
-use clap::Parser;
+use orion_error::prelude::SourceErr;
 use wp_self_update::{check, update, CheckRequest, UpdateRequest};
 
 use crate::cli::{ArtifactKind, CheckArgs, Cli, Command, CommonArgs, InstallArgs};
+use crate::error::{invalid_request, InstallerReason, InstallerResult};
 use crate::report::{
     print_check_report, print_skill_check_report, print_skill_install_report, print_update_report,
 };
@@ -11,8 +12,7 @@ use crate::source::{
     product_label_for_source, resolve_source_config, source_branch_name,
 };
 
-pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
+pub(crate) async fn run_with_cli(cli: Cli) -> InstallerResult<()> {
     match cli.command {
         Some(Command::Check(args)) => run_check(args).await?,
         Some(Command::Install(args)) => run_install(args).await?,
@@ -21,7 +21,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run_check(args: CheckArgs) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_check(args: CheckArgs) -> InstallerResult<()> {
     match args.common.artifact_kind() {
         ArtifactKind::Bin => {
             validate_bin_common_args(&args.common)?;
@@ -32,7 +32,8 @@ async fn run_check(args: CheckArgs) -> Result<(), Box<dyn std::error::Error>> {
                 current_version: current_check_version_or_default(&args, "0.0.0"),
                 branch: source_branch_name(&args.common),
             })
-            .await?;
+            .await
+            .source_err(InstallerReason::SelfUpdateFailed, "failed to check binary update")?;
             print_check_report(args.common.json, &report)?;
         }
         ArtifactKind::Skill => {
@@ -44,7 +45,7 @@ async fn run_check(args: CheckArgs) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run_install(args: InstallArgs) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_install(args: InstallArgs) -> InstallerResult<()> {
     match args.common.artifact_kind() {
         ArtifactKind::Bin => {
             validate_bin_common_args(&args.common)?;
@@ -59,7 +60,8 @@ async fn run_install(args: InstallArgs) -> Result<(), Box<dyn std::error::Error>
                 dry_run: args.dry_run,
                 force: args.force,
             })
-            .await?;
+            .await
+            .source_err(InstallerReason::SelfUpdateFailed, "failed to install binary update")?;
             print_update_report("install", args.common.json, &report)?;
         }
         ArtifactKind::Skill => {
@@ -71,71 +73,75 @@ async fn run_install(args: InstallArgs) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-fn validate_bin_common_args(common: &CommonArgs) -> Result<(), Box<dyn std::error::Error>> {
+fn validate_bin_common_args(common: &CommonArgs) -> InstallerResult<()> {
     if common.skill_path.is_some() {
-        return Err("--path requires --skill".into());
+        return Err(invalid_request("--path requires --skill"));
     }
     Ok(())
 }
 
-fn skill_args_from_common(
-    common: &CommonArgs,
-) -> Result<SkillInstallArgs, Box<dyn std::error::Error>> {
+fn skill_args_from_common(common: &CommonArgs) -> InstallerResult<SkillInstallArgs> {
     Ok(SkillInstallArgs {
         github: common
             .github
             .clone()
-            .ok_or_else(|| "missing GitHub skill source".to_string())?,
+            .ok_or_else(|| invalid_request("missing GitHub skill source"))?,
         latest: common.latest,
         tag: common.tag.clone(),
         path: common
             .skill_path
             .clone()
-            .ok_or_else(|| "missing skill path".to_string())?,
+            .ok_or_else(|| invalid_request("missing skill path"))?,
     })
 }
 
-fn validate_skill_common_args(common: &CommonArgs) -> Result<(), Box<dyn std::error::Error>> {
+fn validate_skill_common_args(common: &CommonArgs) -> InstallerResult<()> {
     if common.github.is_none() {
-        return Err("--skill requires --github <repo>".into());
+        return Err(invalid_request("--skill requires --github <repo>"));
     }
     if common.skill_path.is_none() {
-        return Err("--skill requires --path <repo-subdir>".into());
+        return Err(invalid_request("--skill requires --path <repo-subdir>"));
     }
     if common.source.is_some() || common.updates_base_url.is_some() || common.updates_root.is_some()
     {
-        return Err("--skill cannot be combined with --source, --base-url, or --local-root".into());
+        return Err(invalid_request(
+            "--skill cannot be combined with --source, --base-url, or --local-root",
+        ));
     }
     if common.channel.is_some() {
-        return Err("--skill does not support --channel".into());
+        return Err(invalid_request("--skill does not support --channel"));
     }
     Ok(())
 }
 
-fn validate_skill_check_args(args: &CheckArgs) -> Result<(), Box<dyn std::error::Error>> {
+fn validate_skill_check_args(args: &CheckArgs) -> InstallerResult<()> {
     validate_skill_common_args(&args.common)?;
     if args.current_version.is_some() {
-        return Err("--skill cannot be combined with --current-version".into());
+        return Err(invalid_request(
+            "--skill cannot be combined with --current-version",
+        ));
     }
     Ok(())
 }
 
-fn validate_skill_install_args(args: &InstallArgs) -> Result<(), Box<dyn std::error::Error>> {
+fn validate_skill_install_args(args: &InstallArgs) -> InstallerResult<()> {
     validate_skill_common_args(&args.common)?;
     if args.current_version.is_some() {
-        return Err("--skill cannot be combined with --current-version".into());
+        return Err(invalid_request(
+            "--skill cannot be combined with --current-version",
+        ));
     }
     if args.yes {
-        return Err("--skill cannot be combined with --yes".into());
+        return Err(invalid_request("--skill cannot be combined with --yes"));
     }
     if args.install_dir.is_some() {
-        return Err("--skill cannot be combined with --dir".into());
+        return Err(invalid_request("--skill cannot be combined with --dir"));
     }
     if args.dry_run {
-        return Err("--skill cannot be combined with --dry-run".into());
+        return Err(invalid_request("--skill cannot be combined with --dry-run"));
     }
     if args.force {
-        return Err("--skill cannot be combined with --force".into());
+        return Err(invalid_request("--skill cannot be combined with --force"));
     }
     Ok(())
 }
@@ -143,6 +149,8 @@ fn validate_skill_install_args(args: &InstallArgs) -> Result<(), Box<dyn std::er
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::InstallerReason;
+    use orion_error::reason::ErrorIdentityProvider;
 
     #[test]
     fn direct_skill_requires_path() {
@@ -249,5 +257,76 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("--channel"));
+    }
+
+    #[test]
+    fn invalid_request_exposes_stable_identity() {
+        let err = validate_bin_common_args(&CommonArgs {
+            skill_path: Some("skills/warpparse-log-engineering".to_string()),
+            ..CommonArgs::default()
+        })
+        .unwrap_err();
+
+        assert_eq!(err.reason(), &InstallerReason::InvalidRequest);
+        assert_eq!(err.reason().stable_code(), "conf.installer_invalid_request");
+    }
+
+    #[tokio::test]
+    async fn binary_check_wraps_self_update_error_with_source_chain() {
+        let err = run_check(CheckArgs {
+            common: CommonArgs {
+                github: Some("wp-labs/wpl-check".to_string()),
+                ..CommonArgs::default()
+            },
+            current_version: Some("not-semver".to_string()),
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(err.reason(), &InstallerReason::SelfUpdateFailed);
+        assert_eq!(
+            err.reason().stable_code(),
+            "sys.installer_self_update_failed"
+        );
+        assert!(!err.source_frames().is_empty());
+        assert!(err
+            .root_cause_frame()
+            .map(|frame| {
+                frame.is_root_cause
+                    && frame
+                        .type_name
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("wp_self_update::error::UpdateReason")
+            })
+            .unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn binary_install_wraps_self_update_error_with_source_chain() {
+        let err = run_install(InstallArgs {
+            common: CommonArgs {
+                github: Some("wp-labs/wpl-check".to_string()),
+                ..CommonArgs::default()
+            },
+            current_version: Some("not-semver".to_string()),
+            ..InstallArgs::default()
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(err.reason(), &InstallerReason::SelfUpdateFailed);
+        assert!(!err.source_frames().is_empty());
+        assert!(err
+            .root_cause_frame()
+            .map(|frame| {
+                frame.is_root_cause
+                    && frame
+                        .type_name
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("wp_self_update::error::UpdateReason")
+            })
+            .unwrap_or(false));
     }
 }

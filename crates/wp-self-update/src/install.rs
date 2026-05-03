@@ -1,8 +1,10 @@
+use crate::error::{
+    install_failed, integrity_check_failed, invalid_request, remote_fetch_failed, UpdateResult,
+};
 use crate::fetch::is_retryable_status;
 use crate::{SourceConfig, SourceKind};
 use flate2::read::GzDecoder;
 use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
-use orion_error::{ToStructError, UvsFrom};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Cursor, IsTerminal, Write};
@@ -13,37 +15,34 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tar::Archive;
 use uuid::Uuid;
-use wp_error::run_error::{RunReason, RunResult};
 
 const FETCH_ASSET_CONNECT_TIMEOUT_SECS: u64 = 5;
 const FETCH_ASSET_REQUEST_TIMEOUT_SECS: u64 = 120;
 const FETCH_ASSET_MAX_ATTEMPTS: usize = 3;
 
-pub(crate) fn resolve_install_dir(raw: Option<&Path>) -> RunResult<PathBuf> {
+pub(crate) fn resolve_install_dir(raw: Option<&Path>) -> UpdateResult<PathBuf> {
     let base = if let Some(raw) = raw {
         raw.to_path_buf()
     } else {
         let exe = std::env::current_exe().map_err(|e| {
-            RunReason::from_conf()
-                .to_err()
-                .with_detail(format!("failed to resolve current executable path: {}", e))
+            install_failed(format!("failed to resolve current executable path: {}", e))
         })?;
         exe.parent().map(Path::to_path_buf).ok_or_else(|| {
-            RunReason::from_conf().to_err().with_detail(format!(
+            install_failed(format!(
                 "failed to resolve install dir from {}",
                 exe.display()
             ))
         })?
     };
     let canonical = base.canonicalize().map_err(|e| {
-        RunReason::from_conf().to_err().with_detail(format!(
+        install_failed(format!(
             "failed to access install dir {}: {}",
             base.display(),
             e
         ))
     })?;
     if !canonical.is_dir() {
-        return Err(RunReason::from_conf().to_err().with_detail(format!(
+        return Err(install_failed(format!(
             "install dir is not a directory: {}",
             canonical.display()
         )));
@@ -65,7 +64,7 @@ pub(crate) fn confirm_update(
     latest: &str,
     install_dir: &Path,
     artifact: &str,
-) -> RunResult<bool> {
+) -> UpdateResult<bool> {
     println!("Self-update plan");
     println!("  Current  : {}", current);
     println!("  Latest   : {}", latest);
@@ -74,28 +73,25 @@ pub(crate) fn confirm_update(
     print!("Proceed with installation? [y/N]: ");
     io::stdout()
         .flush()
-        .map_err(|e| RunReason::from_conf().to_err().with_detail(e.to_string()))?;
+        .map_err(|e| install_failed(e.to_string()))?;
     let mut line = String::new();
     io::stdin()
         .read_line(&mut line)
-        .map_err(|e| RunReason::from_conf().to_err().with_detail(e.to_string()))?;
+        .map_err(|e| install_failed(e.to_string()))?;
     let answer = line.trim().to_ascii_lowercase();
     Ok(matches!(answer.as_str(), "y" | "yes"))
 }
 
-pub(crate) fn validate_download_url(raw: &str, source: &SourceConfig) -> RunResult<()> {
-    let parsed = reqwest::Url::parse(raw).map_err(|e| {
-        RunReason::from_conf()
-            .to_err()
-            .with_detail(format!("invalid artifact url '{}': {}", raw, e))
-    })?;
+pub(crate) fn validate_download_url(raw: &str, source: &SourceConfig) -> UpdateResult<()> {
+    let parsed = reqwest::Url::parse(raw)
+        .map_err(|e| invalid_request(format!("invalid artifact url '{}': {}", raw, e)))?;
     let host = parsed.host_str().unwrap_or_default();
     match parsed.scheme() {
         "https" => {
             if is_allowed_artifact_host(host, source) {
                 return Ok(());
             }
-            Err(RunReason::from_conf().to_err().with_detail(format!(
+            Err(invalid_request(format!(
                 "artifact host '{}' is not in the allowed release domain set",
                 host
             )))
@@ -104,12 +100,12 @@ pub(crate) fn validate_download_url(raw: &str, source: &SourceConfig) -> RunResu
             if matches!(host, "127.0.0.1" | "localhost") {
                 return Ok(());
             }
-            Err(RunReason::from_conf().to_err().with_detail(format!(
+            Err(invalid_request(format!(
                 "insecure artifact url '{}' is not allowed; use https or loopback http for local testing",
                 raw
             )))
         }
-        other => Err(RunReason::from_conf().to_err().with_detail(format!(
+        other => Err(invalid_request(format!(
             "unsupported artifact url scheme '{}': {}",
             other, raw
         ))),
@@ -151,7 +147,7 @@ fn is_allowed_artifact_host(host: &str, source: &SourceConfig) -> bool {
     false
 }
 
-pub async fn fetch_asset_bytes(url: &str) -> RunResult<Vec<u8>> {
+pub async fn fetch_asset_bytes(url: &str) -> UpdateResult<Vec<u8>> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(FETCH_ASSET_CONNECT_TIMEOUT_SECS))
         .timeout(Duration::from_secs(FETCH_ASSET_REQUEST_TIMEOUT_SECS))
@@ -160,11 +156,7 @@ pub async fn fetch_asset_bytes(url: &str) -> RunResult<Vec<u8>> {
         .no_deflate()
         .no_zstd()
         .build()
-        .map_err(|e| {
-            RunReason::from_conf()
-                .to_err()
-                .with_detail(format!("failed to build HTTP client: {}", e))
-        })?;
+        .map_err(|e| remote_fetch_failed(format!("failed to build HTTP client: {}", e)))?;
 
     let mut last_error: Option<String> = None;
     for attempt in 1..=FETCH_ASSET_MAX_ATTEMPTS {
@@ -176,7 +168,7 @@ pub async fn fetch_asset_bytes(url: &str) -> RunResult<Vec<u8>> {
                         Ok(bytes) => bytes,
                         Err(err) => {
                             return fetch_asset_bytes_via_curl(url).map_err(|curl_err| {
-                                RunReason::from_conf().to_err().with_detail(format!(
+                                remote_fetch_failed(format!(
                                     "failed to read artifact response {}: {}; curl fallback failed: {}",
                                     url, err, curl_err
                                 ))
@@ -189,9 +181,10 @@ pub async fn fetch_asset_bytes(url: &str) -> RunResult<Vec<u8>> {
                     tokio::time::sleep(Duration::from_millis(200 * attempt as u64)).await;
                     continue;
                 }
-                return Err(RunReason::from_conf()
-                    .to_err()
-                    .with_detail(format!("artifact request failed {}: HTTP {}", url, status)));
+                return Err(remote_fetch_failed(format!(
+                    "artifact request failed {}: HTTP {}",
+                    url, status
+                )));
             }
             Err(e) => {
                 last_error = Some(e.to_string());
@@ -202,7 +195,7 @@ pub async fn fetch_asset_bytes(url: &str) -> RunResult<Vec<u8>> {
             }
         }
     }
-    Err(RunReason::from_conf().to_err().with_detail(format!(
+    Err(remote_fetch_failed(format!(
         "failed to fetch artifact {} after {} attempts: {}",
         url,
         FETCH_ASSET_MAX_ATTEMPTS,
@@ -395,22 +388,22 @@ fn fetch_asset_bytes_via_curl(url: &str) -> Result<Vec<u8>, String> {
     Err(format!("curl exited with status {}", status))
 }
 
-pub(crate) fn verify_asset_sha256(bytes: &[u8], expected_hex: &str) -> RunResult<()> {
+pub(crate) fn verify_asset_sha256(bytes: &[u8], expected_hex: &str) -> UpdateResult<()> {
     use sha2::{Digest, Sha256};
     let actual_hex = hex::encode(Sha256::digest(bytes));
     if actual_hex == expected_hex {
         return Ok(());
     }
-    Err(RunReason::from_conf().to_err().with_detail(format!(
+    Err(integrity_check_failed(format!(
         "artifact sha256 mismatch: expected {}, got {}",
         expected_hex, actual_hex
     )))
 }
 
-pub(crate) fn create_temp_update_dir() -> RunResult<PathBuf> {
+pub(crate) fn create_temp_update_dir() -> UpdateResult<PathBuf> {
     let dir = std::env::temp_dir().join(format!("wproj-self-update-{}", Uuid::new_v4()));
     fs::create_dir_all(&dir).map_err(|e| {
-        RunReason::from_conf().to_err().with_detail(format!(
+        install_failed(format!(
             "failed to create temp update dir {}: {}",
             dir.display(),
             e
@@ -419,12 +412,12 @@ pub(crate) fn create_temp_update_dir() -> RunResult<PathBuf> {
     Ok(dir)
 }
 
-pub fn extract_artifact_archive(bytes: &[u8], extract_root: &Path) -> RunResult<()> {
+pub fn extract_artifact_archive(bytes: &[u8], extract_root: &Path) -> UpdateResult<()> {
     let cursor = Cursor::new(bytes);
     let decoder = GzDecoder::new(cursor);
     let mut archive = Archive::new(decoder);
     archive.unpack(extract_root).map_err(|e| {
-        RunReason::from_conf().to_err().with_detail(format!(
+        install_failed(format!(
             "failed to extract artifact into {}: {}",
             extract_root.display(),
             e
@@ -440,10 +433,10 @@ pub(crate) fn stage_raw_binary(
     bytes: &[u8],
     extract_root: &Path,
     bin_name: &str,
-) -> RunResult<HashMap<String, PathBuf>> {
+) -> UpdateResult<HashMap<String, PathBuf>> {
     let path = extract_root.join(bin_name);
     fs::write(&path, bytes).map_err(|e| {
-        RunReason::from_conf().to_err().with_detail(format!(
+        install_failed(format!(
             "failed to stage raw binary into {}: {}",
             path.display(),
             e
@@ -459,14 +452,11 @@ pub(crate) fn stage_raw_binary(
 pub(crate) fn find_extracted_bins(
     extract_root: &Path,
     required_bins: &[String],
-) -> RunResult<HashMap<String, PathBuf>> {
+) -> UpdateResult<HashMap<String, PathBuf>> {
     let mut found = HashMap::new();
     for entry in walkdir::WalkDir::new(extract_root) {
-        let entry = entry.map_err(|e| {
-            RunReason::from_conf()
-                .to_err()
-                .with_detail(format!("failed to walk extracted artifact: {}", e))
-        })?;
+        let entry = entry
+            .map_err(|e| install_failed(format!("failed to walk extracted artifact: {}", e)))?;
         if !entry.file_type().is_file() {
             continue;
         }
@@ -484,7 +474,7 @@ pub(crate) fn find_extracted_bins(
         .filter(|name| !found.contains_key(*name))
         .collect();
     if !missing.is_empty() {
-        return Err(RunReason::from_conf().to_err().with_detail(format!(
+        return Err(install_failed(format!(
             "artifact missing required binaries: {}",
             missing.join(", ")
         )));
@@ -492,16 +482,15 @@ pub(crate) fn find_extracted_bins(
     Ok(found)
 }
 
-pub(crate) fn discover_extracted_bins(extract_root: &Path) -> RunResult<HashMap<String, PathBuf>> {
+pub(crate) fn discover_extracted_bins(
+    extract_root: &Path,
+) -> UpdateResult<HashMap<String, PathBuf>> {
     let mut artifact_files = HashMap::new();
     let mut all_files = HashMap::new();
 
     for entry in walkdir::WalkDir::new(extract_root) {
-        let entry = entry.map_err(|e| {
-            RunReason::from_conf()
-                .to_err()
-                .with_detail(format!("failed to walk extracted artifact: {}", e))
-        })?;
+        let entry = entry
+            .map_err(|e| install_failed(format!("failed to walk extracted artifact: {}", e)))?;
         if !entry.file_type().is_file() {
             continue;
         }
@@ -535,9 +524,9 @@ pub(crate) fn discover_extracted_bins(extract_root: &Path) -> RunResult<HashMap<
         artifact_files
     };
     if discovered.is_empty() {
-        return Err(RunReason::from_conf()
-            .to_err()
-            .with_detail("artifact did not contain any installable files".to_string()));
+        return Err(install_failed(
+            "artifact did not contain any installable files".to_string(),
+        ));
     }
     Ok(discovered)
 }
@@ -546,13 +535,13 @@ pub(crate) fn install_bins(
     install_dir: &Path,
     extracted: &HashMap<String, PathBuf>,
     bins: &[String],
-) -> RunResult<PathBuf> {
+) -> UpdateResult<PathBuf> {
     let update_root = install_dir.join(".warp_parse-update");
     let backup_dir = update_root
         .join("backups")
         .join(format!("{}", Uuid::new_v4()));
     fs::create_dir_all(&backup_dir).map_err(|e| {
-        RunReason::from_conf().to_err().with_detail(format!(
+        install_failed(format!(
             "failed to create backup dir {}: {}",
             backup_dir.display(),
             e
@@ -561,17 +550,15 @@ pub(crate) fn install_bins(
 
     let mut installed = Vec::new();
     for name in bins {
-        let src = extracted.get(name).ok_or_else(|| {
-            RunReason::from_conf()
-                .to_err()
-                .with_detail(format!("missing extracted binary '{}'", name))
-        })?;
+        let src = extracted
+            .get(name)
+            .ok_or_else(|| install_failed(format!("missing extracted binary '{}'", name)))?;
         let dst = install_dir.join(name);
         let backup = backup_dir.join(name);
         let existed = dst.exists();
         if existed {
             fs::copy(&dst, &backup).map_err(|e| {
-                RunReason::from_conf().to_err().with_detail(format!(
+                install_failed(format!(
                     "failed to back up {} to {}: {}",
                     dst.display(),
                     backup.display(),
@@ -583,7 +570,7 @@ pub(crate) fn install_bins(
         let staged = update_root.join(format!("{}.{}", name, Uuid::new_v4()));
         if let Some(parent) = staged.parent() {
             fs::create_dir_all(parent).map_err(|e| {
-                RunReason::from_conf().to_err().with_detail(format!(
+                install_failed(format!(
                     "failed to create staging dir {}: {}",
                     parent.display(),
                     e
@@ -591,7 +578,7 @@ pub(crate) fn install_bins(
             })?;
         }
         fs::copy(src, &staged).map_err(|e| {
-            RunReason::from_conf().to_err().with_detail(format!(
+            install_failed(format!(
                 "failed to stage {} into {}: {}",
                 src.display(),
                 staged.display(),
@@ -602,7 +589,7 @@ pub(crate) fn install_bins(
         if let Err(err) = fs::rename(&staged, &dst) {
             let _ = fs::remove_file(&staged);
             rollback_installed_bins(&installed)?;
-            return Err(RunReason::from_conf().to_err().with_detail(format!(
+            return Err(install_failed(format!(
                 "failed to install {} into {}: {}",
                 src.display(),
                 dst.display(),
@@ -622,7 +609,7 @@ pub(crate) fn rollback_bins(
     install_dir: &Path,
     backup_dir: &Path,
     bins: &[String],
-) -> RunResult<()> {
+) -> UpdateResult<()> {
     let installed: Vec<InstalledBin> = bins
         .iter()
         .map(|name| InstalledBin {
@@ -634,11 +621,11 @@ pub(crate) fn rollback_bins(
     rollback_installed_bins(&installed)
 }
 
-fn rollback_installed_bins(installed: &[InstalledBin]) -> RunResult<()> {
+fn rollback_installed_bins(installed: &[InstalledBin]) -> UpdateResult<()> {
     for item in installed.iter().rev() {
         if item.existed {
             fs::copy(&item.backup, &item.dst).map_err(|e| {
-                RunReason::from_conf().to_err().with_detail(format!(
+                install_failed(format!(
                     "failed to restore backup {} to {}: {}",
                     item.backup.display(),
                     item.dst.display(),
@@ -648,7 +635,7 @@ fn rollback_installed_bins(installed: &[InstalledBin]) -> RunResult<()> {
             set_exec_permission(&item.dst)?;
         } else if item.dst.exists() {
             fs::remove_file(&item.dst).map_err(|e| {
-                RunReason::from_conf().to_err().with_detail(format!(
+                install_failed(format!(
                     "failed to remove partially installed {}: {}",
                     item.dst.display(),
                     e
@@ -663,7 +650,7 @@ pub(crate) fn run_health_check(
     install_dir: &Path,
     version: &str,
     bins: &[String],
-) -> RunResult<()> {
+) -> UpdateResult<()> {
     let expected = version.trim().trim_start_matches('v');
     for name in bins {
         let exe = install_dir.join(name);
@@ -676,7 +663,7 @@ pub(crate) fn run_health_check(
 
         for args in version_args {
             let output = Command::new(&exe).args(args).output().map_err(|e| {
-                RunReason::from_conf().to_err().with_detail(format!(
+                install_failed(format!(
                     "health check failed to start {} {}: {}",
                     name,
                     args.join(" "),
@@ -706,7 +693,7 @@ pub(crate) fn run_health_check(
 
         for args in help_args {
             let output = Command::new(&exe).args(args).output().map_err(|e| {
-                RunReason::from_conf().to_err().with_detail(format!(
+                install_failed(format!(
                     "health check failed to start {} {}: {}",
                     name,
                     args.join(" "),
@@ -731,13 +718,13 @@ pub(crate) fn run_health_check(
         }
 
         if saw_version_mismatch {
-            return Err(RunReason::from_conf().to_err().with_detail(format!(
+            return Err(install_failed(format!(
                 "health check version mismatch for {}: expected output to contain '{}', got '{}'",
                 name, expected, last_output
             )));
         }
 
-        return Err(RunReason::from_conf().to_err().with_detail(format!(
+        return Err(install_failed(format!(
             "health check failed for {}: no supported version/help probe succeeded",
             name
         )));
@@ -745,21 +732,15 @@ pub(crate) fn run_health_check(
     Ok(())
 }
 
-fn set_exec_permission(path: &Path) -> RunResult<()> {
+fn set_exec_permission(path: &Path) -> UpdateResult<()> {
     #[cfg(unix)]
     {
         let mut perms = fs::metadata(path)
-            .map_err(|e| {
-                RunReason::from_conf().to_err().with_detail(format!(
-                    "failed to stat {}: {}",
-                    path.display(),
-                    e
-                ))
-            })?
+            .map_err(|e| install_failed(format!("failed to stat {}: {}", path.display(), e)))?
             .permissions();
         perms.set_mode(0o755);
         fs::set_permissions(path, perms).map_err(|e| {
-            RunReason::from_conf().to_err().with_detail(format!(
+            install_failed(format!(
                 "failed to set executable permission on {}: {}",
                 path.display(),
                 e
