@@ -401,7 +401,7 @@ pub(crate) fn verify_asset_sha256(bytes: &[u8], expected_hex: &str) -> UpdateRes
 }
 
 pub(crate) fn create_temp_update_dir() -> UpdateResult<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("wproj-self-update-{}", Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("wpadm-self-update-{}", Uuid::new_v4()));
     fs::create_dir_all(&dir).map_err(|e| {
         install_failed(format!(
             "failed to create temp update dir {}: {}",
@@ -790,10 +790,10 @@ mod tests {
     fn find_extracted_bins_accepts_selected_product_bins() {
         let root = std::env::temp_dir().join(format!("wp-update-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).expect("create root");
-        fs::write(root.join("wproj"), "#!/bin/sh\n").expect("write wproj");
+        fs::write(root.join("wpadm"), "#!/bin/sh\n").expect("write wpadm");
         let found =
-            find_extracted_bins(&root, &UpdateProduct::Wproj.owned_bins()).expect("find bins");
-        assert!(found.contains_key("wproj"));
+            find_extracted_bins(&root, &UpdateProduct::Wpadm.owned_bins()).expect("find bins");
+        assert!(found.contains_key("wpadm"));
         let _ = fs::remove_dir_all(root);
     }
 

@@ -274,7 +274,7 @@ mod tests {
         let encoder = GzEncoder::new(&mut out, Compression::default());
         let mut builder = Builder::new(encoder);
         for bin in UpdateProduct::Suite.bins() {
-            let body = if healthy || *bin != "wproj" {
+            let body = if healthy || *bin != "wpadm" {
                 format!("#!/bin/sh\necho \"{} {}\"\n", bin, version)
             } else {
                 "#!/bin/sh\nexit 1\n".to_string()
@@ -347,10 +347,10 @@ mod tests {
             apply_artifact(install_dir.path(), &artifact, "0.30.0").expect("install artifact");
         assert!(backup_dir.exists());
 
-        let out = Command::new(install_dir.path().join("wproj"))
+        let out = Command::new(install_dir.path().join("wpadm"))
             .arg("--version")
             .output()
-            .expect("run installed wproj");
+            .expect("run installed wpadm");
         assert!(out.status.success());
         assert!(String::from_utf8_lossy(&out.stdout).contains("0.30.0"));
     }
@@ -365,10 +365,10 @@ mod tests {
             apply_artifact(install_dir.path(), &artifact, "0.30.0").expect_err("expected failure");
         assert!(format!("{}", err).contains("health check failed"));
 
-        let out = Command::new(install_dir.path().join("wproj"))
+        let out = Command::new(install_dir.path().join("wpadm"))
             .arg("--version")
             .output()
-            .expect("run rolled back wproj");
+            .expect("run rolled back wpadm");
         assert!(out.status.success());
         assert!(String::from_utf8_lossy(&out.stdout).contains("0.21.0"));
     }
@@ -376,17 +376,17 @@ mod tests {
     #[test]
     fn prepares_raw_binary_for_single_bin_targets() {
         let extract_root = tempdir().expect("extract tempdir");
-        let artifact = build_raw_binary("0.30.0", "wproj");
+        let artifact = build_raw_binary("0.30.0", "wpadm");
 
         let (extracted, bins) = prepare_install_payload(
             &artifact,
             extract_root.path(),
-            &UpdateTarget::Bins(vec!["wproj".to_string()]),
+            &UpdateTarget::Bins(vec!["wpadm".to_string()]),
         )
         .expect("prepare raw binary");
 
-        assert_eq!(bins, vec!["wproj".to_string()]);
-        assert!(extracted.contains_key("wproj"));
+        assert_eq!(bins, vec!["wpadm".to_string()]);
+        assert!(extracted.contains_key("wpadm"));
     }
 
     #[test]

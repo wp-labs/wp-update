@@ -200,7 +200,7 @@ pub enum UpdateProduct {
     Wparse,
     Wpgen,
     Wprescue,
-    Wproj,
+    Wpadm,
 }
 
 impl UpdateProduct {
@@ -210,17 +210,17 @@ impl UpdateProduct {
             Self::Wparse => "wparse",
             Self::Wpgen => "wpgen",
             Self::Wprescue => "wprescue",
-            Self::Wproj => "wproj",
+            Self::Wpadm => "wpadm",
         }
     }
 
     pub fn bins(self) -> &'static [&'static str] {
         match self {
-            Self::Suite => &["wparse", "wpgen", "wprescue", "wproj"],
+            Self::Suite => &["wparse", "wpgen", "wprescue", "wpadm"],
             Self::Wparse => &["wparse"],
             Self::Wpgen => &["wpgen"],
             Self::Wprescue => &["wprescue"],
-            Self::Wproj => &["wproj"],
+            Self::Wpadm => &["wpadm"],
         }
     }
 
