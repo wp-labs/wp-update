@@ -1,8 +1,9 @@
 # Changelog
 
-## [Unreleased]
+## [0.3.1] - 2026-08-11
 
 ### Changed
+- **`wp-self-update`**: `UpdateProduct::Wproj` renamed to `UpdateProduct::Wpadm` (serde string `"wproj"` → `"wpadm"`); `UpdateProduct::Suite.bins()` now requires `wpadm` instead of `wproj`, matching the `wproj` → `wpadm` CLI binary rename in `warp-parse`.
 - Upgraded `orion-error` from 0.7 to 0.8 across `wp-inst` and `wp-self-update`.
   - Replaced `ErrorWrapAs`/`IntoAs` traits with unified `SourceErr` / `.source_err()`.
   - Replaced `StructError::from(reason).with_detail(...)` with `reason.to_err().with_detail(...)`.
