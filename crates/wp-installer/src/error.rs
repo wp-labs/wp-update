@@ -24,7 +24,9 @@ pub(crate) fn invalid_request(detail: impl Into<String>) -> InstallerError {
 }
 
 pub(crate) fn skill_install_failed(detail: impl Into<String>) -> InstallerError {
-    InstallerReason::SkillInstallFailed.to_err().with_detail(detail)
+    InstallerReason::SkillInstallFailed
+        .to_err()
+        .with_detail(detail)
 }
 
 #[cfg(test)]

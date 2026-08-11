@@ -34,7 +34,9 @@ pub(crate) fn remote_fetch_failed(detail: impl Into<String>) -> UpdateError {
 }
 
 pub(crate) fn integrity_check_failed(detail: impl Into<String>) -> UpdateError {
-    UpdateReason::IntegrityCheckFailed.to_err().with_detail(detail)
+    UpdateReason::IntegrityCheckFailed
+        .to_err()
+        .with_detail(detail)
 }
 
 pub(crate) fn state_conflict(detail: impl Into<String>) -> UpdateError {

@@ -33,7 +33,10 @@ async fn run_check(args: CheckArgs) -> InstallerResult<()> {
                 branch: source_branch_name(&args.common),
             })
             .await
-            .source_err(InstallerReason::SelfUpdateFailed, "failed to check binary update")?;
+            .source_err(
+                InstallerReason::SelfUpdateFailed,
+                "failed to check binary update",
+            )?;
             print_check_report(args.common.json, &report)?;
         }
         ArtifactKind::Skill => {
@@ -61,7 +64,10 @@ async fn run_install(args: InstallArgs) -> InstallerResult<()> {
                 force: args.force,
             })
             .await
-            .source_err(InstallerReason::SelfUpdateFailed, "failed to install binary update")?;
+            .source_err(
+                InstallerReason::SelfUpdateFailed,
+                "failed to install binary update",
+            )?;
             print_update_report("install", args.common.json, &report)?;
         }
         ArtifactKind::Skill => {

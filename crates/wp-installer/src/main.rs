@@ -18,10 +18,7 @@ async fn main() {
         Ok(()) => 0,
         Err(err) => {
             if json_errors {
-                match err
-                    .exposure(&DefaultExposurePolicy)
-                    .to_cli_error_json()
-                {
+                match err.exposure(&DefaultExposurePolicy).to_cli_error_json() {
                     Ok(value) => eprintln!("{}", value),
                     Err(_) => eprintln!("wp-inst error\n{}", err.render()),
                 }
