@@ -7,7 +7,7 @@ mod platform;
 mod types;
 mod versioning;
 
-pub use error::{UpdateError, UpdateResult};
+pub use error::{UpdateError, UpdateReason, UpdateResult};
 pub use manifest::updates_manifest_url;
 pub use types::{
     CheckReport, CheckRequest, GithubReleaseAssetInfo, GithubReleaseInfo, GithubRepo,

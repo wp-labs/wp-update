@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2] - 2026-09-30
+
+### Fixed
+- **`wp-inst install` / `check`**: `--dir` is now created when missing instead of failing (`canonicalize()` used to error out, and it was reported as the misleading `installer self update failed`).
+- Error causes are no longer swallowed: the wrapped `wp_self_update` reason + detail are folded into `detail`; the human output also appends a `caused by:` chain, and the `--json` `detail` / `summary` carry the root cause too.
+- Accurate failure categories: `SelfUpdateFailed` (`sys.installer_self_update_failed`) split into `CheckFailed` (`sys.installer_check_failed`) and `InstallFailed` (`sys.installer_install_failed`); skill-archive failures now use `SkillInstallFailed`.
+
 ## [0.3.1] - 2026-08-11
 
 ### Changed

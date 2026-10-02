@@ -22,6 +22,17 @@ const FETCH_ASSET_MAX_ATTEMPTS: usize = 3;
 
 pub(crate) fn resolve_install_dir(raw: Option<&Path>) -> UpdateResult<PathBuf> {
     let base = if let Some(raw) = raw {
+        if !raw.exists() {
+            // `--dir` 不存在时自动创建：此前会因 `canonicalize()` 直接失败，
+            // 且被上层包装成误导性的 "installer self update failed"。
+            fs::create_dir_all(raw).map_err(|e| {
+                install_failed(format!(
+                    "failed to create install dir {}: {}",
+                    raw.display(),
+                    e
+                ))
+            })?;
+        }
         raw.to_path_buf()
     } else {
         let exe = std::env::current_exe().map_err(|e| {
@@ -767,6 +778,18 @@ mod tests {
     #[test]
     fn package_managed_dir_detects_usr_local_bin() {
         assert!(is_probably_package_managed(Path::new("/usr/local/bin")));
+    }
+
+    #[test]
+    fn resolve_install_dir_creates_missing_dir() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let target = tmp.path().join("nested/bin");
+        assert!(!target.exists());
+
+        let resolved = resolve_install_dir(Some(&target)).expect("resolve");
+
+        assert!(target.is_dir(), "missing --dir should be created");
+        assert_eq!(resolved, target.canonicalize().expect("canonicalize"));
     }
 
     #[test]

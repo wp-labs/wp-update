@@ -1,8 +1,7 @@
-use orion_error::prelude::SourceErr;
 use wp_self_update::{check, update, CheckRequest, UpdateRequest};
 
 use crate::cli::{ArtifactKind, CheckArgs, Cli, Command, CommonArgs, InstallArgs};
-use crate::error::{invalid_request, InstallerReason, InstallerResult};
+use crate::error::{invalid_request, update_failed, InstallerReason, InstallerResult};
 use crate::report::{
     print_check_report, print_skill_check_report, print_skill_install_report, print_update_report,
 };
@@ -33,10 +32,13 @@ async fn run_check(args: CheckArgs) -> InstallerResult<()> {
                 branch: source_branch_name(&args.common),
             })
             .await
-            .source_err(
-                InstallerReason::SelfUpdateFailed,
-                "failed to check binary update",
-            )?;
+            .map_err(|e| {
+                update_failed(
+                    InstallerReason::CheckFailed,
+                    "failed to check binary update",
+                    e,
+                )
+            })?;
             print_check_report(args.common.json, &report)?;
         }
         ArtifactKind::Skill => {
@@ -64,10 +66,13 @@ async fn run_install(args: InstallArgs) -> InstallerResult<()> {
                 force: args.force,
             })
             .await
-            .source_err(
-                InstallerReason::SelfUpdateFailed,
-                "failed to install binary update",
-            )?;
+            .map_err(|e| {
+                update_failed(
+                    InstallerReason::InstallFailed,
+                    "failed to install binary update",
+                    e,
+                )
+            })?;
             print_update_report("install", args.common.json, &report)?;
         }
         ArtifactKind::Skill => {
@@ -278,7 +283,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn binary_check_wraps_self_update_error_with_source_chain() {
+    async fn binary_check_wraps_update_error_with_source_chain() {
         let err = run_check(CheckArgs {
             common: CommonArgs {
                 github: Some("wp-labs/wpl-check".to_string()),
@@ -289,11 +294,8 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert_eq!(err.reason(), &InstallerReason::SelfUpdateFailed);
-        assert_eq!(
-            err.reason().stable_code(),
-            "sys.installer_self_update_failed"
-        );
+        assert_eq!(err.reason(), &InstallerReason::CheckFailed);
+        assert_eq!(err.reason().stable_code(), "sys.installer_check_failed");
         assert!(!err.source_frames().is_empty());
         assert!(err
             .root_cause_frame()
@@ -309,7 +311,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn binary_install_wraps_self_update_error_with_source_chain() {
+    async fn binary_install_wraps_update_error_with_source_chain() {
         let err = run_install(InstallArgs {
             common: CommonArgs {
                 github: Some("wp-labs/wpl-check".to_string()),
@@ -321,7 +323,8 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert_eq!(err.reason(), &InstallerReason::SelfUpdateFailed);
+        assert_eq!(err.reason(), &InstallerReason::InstallFailed);
+        assert_eq!(err.reason().stable_code(), "sys.installer_install_failed");
         assert!(!err.source_frames().is_empty());
         assert!(err
             .root_cause_frame()

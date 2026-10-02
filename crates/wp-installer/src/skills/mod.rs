@@ -3,7 +3,7 @@ mod target;
 
 pub(crate) use source::SkillInstallArgs;
 
-use crate::error::{skill_install_failed, InstallerReason, InstallerResult};
+use crate::error::{skill_install_failed, update_failed, InstallerReason, InstallerResult};
 use orion_error::prelude::SourceErr;
 use serde::Serialize;
 use source::{parse_skill_source, SkillSource};
@@ -116,10 +116,13 @@ async fn download_repo_archive(
         },
     )
     .await
-    .source_err(
-        InstallerReason::SelfUpdateFailed,
-        "failed to load GitHub release metadata for skill archive",
-    )?;
+    .map_err(|e| {
+        update_failed(
+            InstallerReason::SkillInstallFailed,
+            "failed to load GitHub release metadata for skill archive",
+            e,
+        )
+    })?;
     let expected_asset_name = format!("{}-{}.tar.gz", source.repo.name, release.tag_name);
     let asset_url = release
         .assets
@@ -134,18 +137,24 @@ async fn download_repo_archive(
             ))
         })?;
 
-    let bytes = download_asset_bytes(&asset_url).await.source_err(
-        InstallerReason::SelfUpdateFailed,
-        "failed to download skill archive",
-    )?;
+    let bytes = download_asset_bytes(&asset_url).await.map_err(|e| {
+        update_failed(
+            InstallerReason::SkillInstallFailed,
+            "failed to download skill archive",
+            e,
+        )
+    })?;
     let temp_dir = TempDir::new().source_err(
         InstallerReason::SkillInstallFailed,
         "failed to create temp skill dir",
     )?;
-    extract_tar_gz_archive(&bytes, temp_dir.path()).source_err(
-        InstallerReason::SelfUpdateFailed,
-        "failed to extract downloaded skill archive",
-    )?;
+    extract_tar_gz_archive(&bytes, temp_dir.path()).map_err(|e| {
+        update_failed(
+            InstallerReason::SkillInstallFailed,
+            "failed to extract downloaded skill archive",
+            e,
+        )
+    })?;
     let archive_root = locate_archive_root(temp_dir.path())?;
     Ok((release, asset_url, temp_dir, archive_root))
 }
