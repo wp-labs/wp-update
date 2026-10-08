@@ -166,8 +166,9 @@ fn parse_github_release(
         remote_fetch_failed(format!("invalid GitHub release JSON {}: {}", source, e))
     })?;
 
-    let target = crate::platform::detect_target_triple_v2()?;
-    let asset = select_github_release_asset(&release.assets, target).ok_or_else(|| {
+    let candidates = crate::platform::detect_target_candidates()?;
+    let (target, asset) = select_github_release_asset_for_candidates(&release.assets, candidates)
+        .ok_or_else(|| {
         let mut names: Vec<&str> = release
             .assets
             .iter()
@@ -175,8 +176,8 @@ fn parse_github_release(
             .collect();
         names.sort_unstable();
         remote_fetch_failed(format!(
-            "GitHub release missing asset for target '{}': {} (available: {})",
-            target,
+            "GitHub release missing asset for any platform target {:?}: {} (available: {})",
+            candidates,
             repo.url,
             names.join(", ")
         ))
@@ -213,6 +214,16 @@ fn parse_github_release_info(raw: &str, source: &str) -> UpdateResult<GithubRele
                 browser_download_url: asset.browser_download_url,
             })
             .collect(),
+    })
+}
+
+/// 按候选顺序取第一个命中的资产，返回 `(命中的 target, 资产)`。
+fn select_github_release_asset_for_candidates<'a>(
+    assets: &'a [GithubReleaseAsset],
+    candidates: &'a [&'a str],
+) -> Option<(&'a str, &'a GithubReleaseAsset)> {
+    candidates.iter().find_map(|candidate| {
+        select_github_release_asset(assets, candidate).map(|asset| (*candidate, asset))
     })
 }
 
@@ -337,5 +348,40 @@ mod tests {
 
         let selected = select_github_release_asset(&assets, "aarch64-apple-darwin").unwrap();
         assert_eq!(selected.browser_download_url, "https://example.com/raw");
+    }
+
+    fn gh_asset(name: &str) -> GithubReleaseAsset {
+        GithubReleaseAsset {
+            name: name.to_string(),
+            browser_download_url: format!("https://example.com/{name}"),
+            digest: Some(
+                "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    .to_string(),
+            ),
+        }
+    }
+
+    #[test]
+    fn select_github_release_asset_candidates_prefer_first_hit() {
+        // musl 与 gnu 都在时，候选顺序决定命中 musl。
+        let assets = vec![
+            gh_asset("app-v1-x86_64-unknown-linux-musl.tar.gz"),
+            gh_asset("app-v1-x86_64-unknown-linux-gnu.tar.gz"),
+        ];
+        let candidates = ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"];
+
+        let (target, selected) =
+            select_github_release_asset_for_candidates(&assets, &candidates).unwrap();
+        assert_eq!(target, "x86_64-unknown-linux-musl");
+        assert!(selected.name.contains("musl"));
+    }
+
+    #[test]
+    fn select_github_release_asset_candidates_fall_back() {
+        let assets = vec![gh_asset("app-v1-x86_64-unknown-linux-gnu.tar.gz")];
+        let candidates = ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"];
+
+        let (target, _) = select_github_release_asset_for_candidates(&assets, &candidates).unwrap();
+        assert_eq!(target, "x86_64-unknown-linux-gnu");
     }
 }

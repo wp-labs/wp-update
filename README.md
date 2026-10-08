@@ -10,6 +10,7 @@ Shared update crates for wp-labs binaries.
 ## Docs
 
 - `docs/orion-accessor-evaluation.md`
+- `docs/wp-self-update-platform-target.md` (Chinese: `.zh-CN.md`)
 
 ## Quick Start
 

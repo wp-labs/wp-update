@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.3] - 2026-10-08
+
+### Fixed
+- **Linux platform resolution**: self-update and `wp-inst` now resolve Linux artifacts musl-first (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`) and fall back to the legacy glibc triple when a release only publishes it. Consumers such as `gops self` and `gx self` keep working against releases that publish musl-only artifacts, without breaking older gnu-only releases.
+
 ## [0.3.2] - 2026-09-30
 
 ### Fixed

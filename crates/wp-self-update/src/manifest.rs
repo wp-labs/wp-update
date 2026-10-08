@@ -1,7 +1,7 @@
 use crate::types::{ResolvedRelease, UpdateChannel};
 use crate::{
     error::{integrity_check_failed, invalid_request, UpdateResult},
-    platform::detect_target_triple_v2,
+    platform::detect_target_candidates,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -46,13 +46,13 @@ pub fn parse_v2_release(
         )));
     }
 
-    let target = detect_target_triple_v2()?;
-    let asset = manifest.assets.get(target).ok_or_else(|| {
+    let candidates = detect_target_candidates()?;
+    let (target, asset) = select_asset(&manifest.assets, candidates).ok_or_else(|| {
         let mut keys: Vec<&str> = manifest.assets.keys().map(|k| k.as_str()).collect();
         keys.sort_unstable();
         invalid_request(format!(
-            "manifest missing asset for target '{}': {} (available: {})",
-            target,
+            "manifest missing asset for any platform target {:?}: {} (available: {})",
+            candidates,
             source,
             keys.join(", ")
         ))
@@ -64,6 +64,16 @@ pub fn parse_v2_release(
         artifact: asset.url.clone(),
         sha256: validate_sha256_hex(&asset.sha256, source, target)?,
     })
+}
+
+/// 按候选顺序取 `assets` 中第一个命中的资产，返回 `(命中的 target, 资产)`。
+fn select_asset<'a>(
+    assets: &'a HashMap<String, UpdateAssetV2>,
+    candidates: &'a [&'a str],
+) -> Option<(&'a str, &'a UpdateAssetV2)> {
+    candidates
+        .iter()
+        .find_map(|candidate| assets.get(*candidate).map(|asset| (*candidate, asset)))
 }
 
 fn validate_sha256_hex(raw: &str, source: &str, target: &str) -> UpdateResult<String> {
@@ -155,5 +165,46 @@ mod tests {
 }"#;
         let err = parse_v2_release(raw, "test", UpdateChannel::Alpha).unwrap_err();
         assert!(format!("{}", err).contains("invalid sha256"));
+    }
+
+    fn asset(url: &str) -> UpdateAssetV2 {
+        UpdateAssetV2 {
+            url: url.to_string(),
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+        }
+    }
+
+    #[test]
+    fn select_asset_prefers_first_candidate() {
+        // musl 与 gnu 同时存在时，musl 优先。
+        let mut assets = HashMap::new();
+        assets.insert("x86_64-unknown-linux-musl".to_string(), asset("musl"));
+        assets.insert("x86_64-unknown-linux-gnu".to_string(), asset("gnu"));
+        let candidates = ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"];
+
+        let (target, selected) = select_asset(&assets, &candidates).unwrap();
+        assert_eq!(target, "x86_64-unknown-linux-musl");
+        assert_eq!(selected.url, "musl");
+    }
+
+    #[test]
+    fn select_asset_falls_back_to_gnu() {
+        // 仅有 gnu 的旧发布：回退命中 gnu。
+        let mut assets = HashMap::new();
+        assets.insert("x86_64-unknown-linux-gnu".to_string(), asset("gnu"));
+        let candidates = ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"];
+
+        let (target, selected) = select_asset(&assets, &candidates).unwrap();
+        assert_eq!(target, "x86_64-unknown-linux-gnu");
+        assert_eq!(selected.url, "gnu");
+    }
+
+    #[test]
+    fn select_asset_none_when_no_candidate_present() {
+        let mut assets = HashMap::new();
+        assets.insert("aarch64-apple-darwin".to_string(), asset("darwin"));
+        let candidates = ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"];
+
+        assert!(select_asset(&assets, &candidates).is_none());
     }
 }
