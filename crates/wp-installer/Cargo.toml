@@ -1,6 +1,6 @@
 [package]
 name = "wp-inst"
-version = "0.3.3" # @gxl:set(version)
+version = "0.4.0" # @gxl:set(version)
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
@@ -13,7 +13,7 @@ categories = ["command-line-utilities", "development-tools"]
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 derive_more = { version = "2.1", features = ["from"] }
-orion-error = { version = "0.8", features = ["serde", "serde_json"] }
+orion-error = { version = "0.9", features = ["serde", "serde_json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tempfile = "3.23"

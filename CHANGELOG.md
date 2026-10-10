@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.0] - 2026-10-10
+
+### Changed
+- **Upgraded `orion-error` from 0.8 to 0.9** across `wp-self-update` and `wp-inst` (`orion-error = "0.9"`).
+  This moves both crates onto the 0.9 error baseline (`StructError`, `#[derive(OrionError)]` reasons, `conversion::ToStructError`, `protocol::*` projections). No behavioural change; consumers that exchange `StructError` / reason types with these crates must also move to `orion-error 0.9`.
+
 ## [0.3.3] - 2026-10-08
 
 ### Fixed
